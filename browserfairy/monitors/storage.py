@@ -39,12 +39,14 @@ class StorageMonitor:
             logger.debug(f"Storage events not available: {e}")
     
     async def _enable_storage_events(self) -> None:
-        """启用存储domain事件监听"""
-        # 必须先调用Storage.enable才能接收事件推送（某些环境不支持此方法）
-        await self.connector.call("Storage.enable")
-        
-        # 可选：设置事件处理器（需要connector支持事件监听）
-        # 当前阶段暂不实现IndexedDB事件处理，专注配额监控
+        """启用存储相关事件监听（兼容实现）。
+
+        说明：部分 Chrome 版本并不提供 Storage.enable。这里不再调用该接口，
+        仅保留配额监控逻辑；针对 IndexedDB/CacheStorage 的事件，靠按-origin
+        的 track 接口在 track_origin 中分别启用。
+        """
+        # 不调用不存在/不兼容的 Storage.enable，以避免无意义的错误日志
+        return
         
     async def stop(self) -> None:
         """停止监控和清理（复用现有清理模式）"""
@@ -72,6 +74,16 @@ class StorageMonitor:
             logger.debug(f"StorageMonitor.track_origin: trackIndexedDB enabled for {origin}")
         except Exception as e:
             logger.debug(f"StorageMonitor.track_origin: trackIndexedDB not available for {origin}: {e}")
+
+        # 追加：尝试启用 CacheStorage 跟踪（可失败）
+        try:
+            await self.connector.call(
+                "Storage.trackCacheStorageForOrigin",
+                {"origin": origin}
+            )
+            logger.debug(f"StorageMonitor.track_origin: trackCacheStorage enabled for {origin}")
+        except Exception as e:
+            logger.debug(f"StorageMonitor.track_origin: trackCacheStorage not available for {origin}: {e}")
 
         # 无论是否支持IndexedDB事件，都加入跟踪集合并立即采集一次
         self.tracked_origins.add(origin)
@@ -144,6 +156,49 @@ class StorageMonitor:
             
         except Exception as e:
             logger.debug(f"Failed to collect quota info for {origin}: {e}")
+            return None
+
+    async def collect_quota_via_page(self, session_id: str, origin: str, hostname: str) -> Optional[Dict[str, Any]]:
+        """通过页面上下文回退采集配额（navigator.storage.estimate）。
+
+        适用场景：Storage.* API 返回 Internal error 或不支持时。
+        注意：该方法需要有效的 Target 会话 session_id。
+        """
+        try:
+            expr = "(async () => { try { const est = await (navigator.storage && navigator.storage.estimate ? navigator.storage.estimate() : null); return est || {}; } catch(e){ return {error: String(e)}; } })()"
+            res = await self.connector.call(
+                "Runtime.evaluate",
+                {
+                    "expression": expr,
+                    "awaitPromise": True,
+                    "returnByValue": True
+                },
+                session_id=session_id,
+                timeout=10.0
+            )
+
+            value = (res or {}).get("result", {}).get("value", {}) or {}
+            quota = value.get("quota") or 0
+            usage = value.get("usage") or 0
+
+            record = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "type": "storage_quota",
+                "origin": origin,
+                "hostname": hostname,
+                "data": {
+                    "quota": quota,
+                    "usage": usage,
+                    "usageRate": (usage / quota) if quota else 0,
+                    "usageDetails": {},
+                    "warningLevel": self._calculate_warning_level(usage, quota),
+                    "source": "page_estimate"
+                }
+            }
+            logger.debug(f"StorageMonitor.collect_quota_via_page: origin={origin} usage={usage} quota={quota}")
+            return record
+        except Exception as e:
+            logger.debug(f"collect_quota_via_page failed for {origin}: {e}")
             return None
     
     async def _safe_callback(self, data_type: str, data: Dict[str, Any]) -> None:

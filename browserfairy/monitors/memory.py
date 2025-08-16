@@ -49,6 +49,7 @@ class MemoryCollector:
         self.event_queue: Optional[asyncio.Queue] = None
         self.console_monitor: Optional['ConsoleMonitor'] = None
         self.network_monitor: Optional['NetworkMonitor'] = None
+        self.domstorage_monitor: Optional[Any] = None
         self.correlation_engine: Optional['SimpleCorrelationEngine'] = None
         self.event_consumer_task: Optional[asyncio.Task] = None
         self.consumer_running = False  # Independent lifecycle for event consumer
@@ -182,6 +183,7 @@ class MemoryCollector:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "hostname": self.hostname,
             "targetId": self.target_id,
+            "sessionId": self.session_id,
             "url": self.current_url,
             "title": self.current_title,
             "memory": {
@@ -260,6 +262,9 @@ class MemoryCollector:
         if self.network_monitor:
             await self.network_monitor.stop_monitoring()
         
+        if self.domstorage_monitor:
+            await self.domstorage_monitor.stop_monitoring()
+        
         # Cancel and wait for event consumer task completion
         if self.event_consumer_task:
             self.event_consumer_task.cancel()
@@ -299,6 +304,7 @@ class MemoryCollector:
         # Import and initialize monitoring components
         from .console import ConsoleMonitor
         from .network import NetworkMonitor
+        from .domstorage import DOMStorageMonitor
         from ..analysis.correlation import SimpleCorrelationEngine
         
         self.console_monitor = ConsoleMonitor(
@@ -313,15 +319,23 @@ class MemoryCollector:
             self.event_queue,
             self.status_callback
         )
+        self.domstorage_monitor = DOMStorageMonitor(
+            self.connector,
+            self.session_id,
+            self.event_queue,
+            self.status_callback
+        )
         self.correlation_engine = SimpleCorrelationEngine(self.status_callback)
         
         # Set hostname for data grouping
         self.console_monitor.set_hostname(self.hostname)
         self.network_monitor.set_hostname(self.hostname)
+        self.domstorage_monitor.set_hostname(self.hostname)
         
         # Start monitoring (use queue mode, not data_callback)
         await self.console_monitor.start_monitoring()
         await self.network_monitor.start_monitoring()
+        await self.domstorage_monitor.start_monitoring()
         
         # Start event consumer with independent lifecycle
         self.consumer_running = True

@@ -235,6 +235,7 @@ async def monitor_memory(host: str, port: int, duration: Optional[int] = None) -
         async def on_tab_event(event_type: str, payload: dict):
             target_id = payload["targetId"]
             hostname = payload["hostname"]
+            url = payload.get("url", "")
             
             if event_type == "CREATED":
                 await memory_monitor.create_collector(target_id, hostname)
@@ -425,6 +426,10 @@ async def comprehensive_data_callback(data_manager, data: dict):
             await data_manager.write_console_data(hostname, data)
         elif data_type in ["network_request_complete", "network_request_failed", "network_request_start"]:
             await data_manager.write_network_data(hostname, data)
+        elif data_type in [
+            "domstorage_added", "domstorage_removed", "domstorage_updated", "domstorage_cleared"
+        ]:
+            await data_manager.write_storage_event(hostname, data)
         elif data_type == "correlation":
             await data_manager.write_correlation_data(hostname, data)
         else:
@@ -501,6 +506,12 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
                 collector.collection_task = asyncio.create_task(collector.start_collection())
                 
                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] TAB_CREATED: {hostname} - Comprehensive monitoring started ({target_id[:8]})")
+                # After attach, trigger page-level estimate immediately
+                try:
+                    origin = data_manager._extract_origin_from_url(url) if url else None
+                    await data_manager.trigger_page_estimate(collector.session_id, origin, hostname)
+                except Exception:
+                    pass
                 
             elif event_type == "DESTROYED":
                 await memory_monitor.remove_collector(target_id)
@@ -526,6 +537,12 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
                 elif collector:
                     # Same hostname, just update page info
                     collector.update_page_info(payload["url"], payload.get("title", ""))
+                    # Trigger page-level estimate on URL change
+                    try:
+                        new_origin = data_manager._extract_origin_from_url(payload.get("url", ""))
+                        await data_manager.trigger_page_estimate(collector.session_id, new_origin, hostname)
+                    except Exception:
+                        pass
                 else:
                     # No collector yet (e.g., from chrome://newtab to https://...)
                     collector = MemoryCollector(
@@ -540,6 +557,12 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
                     memory_monitor.collectors[target_id] = collector
                     collector.collection_task = asyncio.create_task(collector.start_collection())
                     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] TAB_UPGRADED: {hostname} - Comprehensive monitoring started on URL change ({target_id[:8]})")
+                    # Trigger page-level estimate after upgrade
+                    try:
+                        origin = data_manager._extract_origin_from_url(payload.get("url", ""))
+                        await data_manager.trigger_page_estimate(collector.session_id, origin, hostname)
+                    except Exception:
+                        pass
         
         # Start monitoring
         tab_monitor.event_callback = on_tab_event
@@ -572,6 +595,12 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
                     target_info.get("url", ""),
                     target_info.get("title", "")
                 )
+                # Trigger initial page-level estimate
+                try:
+                    origin = data_manager._extract_origin_from_url(target_info.get("url", ""))
+                    await data_manager.trigger_page_estimate(collector.session_id, origin, hostname)
+                except Exception:
+                    pass
         
         print(f"✓ Comprehensive monitoring {memory_monitor.get_collector_count()} tabs")
         print(f"✓ Data directory: {data_manager.data_dir}")

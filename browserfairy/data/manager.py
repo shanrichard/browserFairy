@@ -27,6 +27,8 @@ class DataManager:
         self.running = False
         # 维护 origin → hostname 的映射，便于将配额数据同步到站点目录
         self.origin_to_hostname: Dict[str, str] = {}
+        # 维护 hostname → 最新 sessionId 的映射，用于页面级估算回退
+        self.hostname_to_session: Dict[str, str] = {}
     
     def _create_session_directory(self) -> Path:
         """创建会话目录"""
@@ -146,6 +148,10 @@ class DataManager:
         
         # 触发该hostname的存储监控（从内存数据的URL中正确提取origin）
         url = memory_data.get("url", "")
+        # 记录 sessionId 以便存储估算回退
+        sid = memory_data.get("sessionId")
+        if sid:
+            self.hostname_to_session[hostname] = sid
         if url:
             origin = self._extract_origin_from_url(url)
             if origin:
@@ -156,6 +162,25 @@ class DataManager:
                 self.origin_to_hostname[origin] = hostname
                 logger.debug(f"DataManager: tracking origin {origin} for hostname {hostname}")
                 await self.storage_monitor.track_origin(origin)
+                # 若为首次建立映射，额外触发页面级估算回退，避免 Storage.* API 在部分版本返回 Internal error
+                if not prev and sid:
+                    try:
+                        record = await self.storage_monitor.collect_quota_via_page(sid, origin, hostname)
+                        if record:
+                            await self._on_storage_data("quota", record)
+                    except Exception as e:
+                        logger.debug(f"Page estimate fallback failed for {origin}: {e}")
+
+    async def trigger_page_estimate(self, session_id: str, origin: Optional[str], hostname: str) -> None:
+        """对给定会话+origin 触发一次页面级存储估算并写入。"""
+        if not session_id or not origin or not self.running:
+            return
+        try:
+            record = await self.storage_monitor.collect_quota_via_page(session_id, origin, hostname)
+            if record:
+                await self._on_storage_data("quota", record)
+        except Exception as e:
+            logger.debug(f"trigger_page_estimate failed for {origin}: {e}")
     
     async def write_console_data(self, hostname: str, console_data: Dict[str, Any]) -> None:
         """Console data writing (new method for comprehensive monitoring)."""
@@ -170,6 +195,34 @@ class DataManager:
             return
         file_path = f"{hostname}/network.jsonl"
         await self.data_writer.append_jsonl(file_path, network_data)
+        # 同步触发存储监控（基于网络事件的URL提取origin），
+        # 仅针对同站点的 first-party 请求，避免第三方域导致的 CDP Internal error
+        try:
+            url = network_data.get("url")
+            origin = self._extract_origin_from_url(url) if url else None
+            if origin:
+                prev = self.origin_to_hostname.get(origin)
+                if prev and prev != hostname:
+                    logger.debug(f"DataManager: origin {origin} remapped from {prev} to {hostname}")
+                # 仅跟踪与当前站点同域的origin（严格匹配hostname）
+                try:
+                    from urllib.parse import urlparse
+                    o_host = urlparse(origin).hostname
+                except Exception:
+                    o_host = None
+
+                if o_host and o_host == hostname:
+                    self.origin_to_hostname[origin] = hostname
+                    await self.storage_monitor.track_origin(origin)
+        except Exception as e:
+            logger.debug(f"DataManager.write_network_data: origin tracking skipped due to error: {e}")
+
+    async def write_storage_event(self, hostname: str, storage_event: Dict[str, Any]) -> None:
+        """Write DOMStorage-related events into storage.jsonl (per hostname)."""
+        if not self.running:
+            return
+        file_path = f"{hostname}/storage.jsonl"
+        await self.data_writer.append_jsonl(file_path, storage_event)
     
     async def write_correlation_data(self, hostname: str, correlation_data: Dict[str, Any]) -> None:
         """Correlation analysis data writing (new method for comprehensive monitoring)."""
