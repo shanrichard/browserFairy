@@ -51,6 +51,7 @@ class MemoryCollector:
         self.network_monitor: Optional['NetworkMonitor'] = None
         self.correlation_engine: Optional['SimpleCorrelationEngine'] = None
         self.event_consumer_task: Optional[asyncio.Task] = None
+        self.consumer_running = False  # Independent lifecycle for event consumer
         
     async def attach(self) -> None:
         """Establish Target-level session."""
@@ -89,6 +90,18 @@ class MemoryCollector:
     
     async def detach(self) -> None:
         """Clean up Target session."""
+        # Stop event consumer first
+        if self.enable_comprehensive and self.event_consumer_task:
+            self.consumer_running = False
+            try:
+                await asyncio.wait_for(self.event_consumer_task, timeout=1.0)
+            except asyncio.TimeoutError:
+                self.event_consumer_task.cancel()
+                try:
+                    await self.event_consumer_task
+                except asyncio.CancelledError:
+                    pass
+            
         if self.session_id:
             try:
                 await self.connector.call(
@@ -296,13 +309,14 @@ class MemoryCollector:
         await self.console_monitor.start_monitoring()
         await self.network_monitor.start_monitoring()
         
-        # Start event consumer
+        # Start event consumer with independent lifecycle
+        self.consumer_running = True
         self.event_consumer_task = asyncio.create_task(self._consume_events())
         
     async def _consume_events(self):
         """Event consumer coroutine - proper stop conditions and lifecycle management."""
         try:
-            while self.running and self.enable_comprehensive:
+            while self.consumer_running and self.enable_comprehensive:
                 try:
                     # Batch event processing (avoid single event blocking)
                     events_batch = []
