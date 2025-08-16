@@ -212,34 +212,10 @@ class ChromeInstanceManager:
         return [self.chrome_path] + base_args + safe_optimization_args + [self._get_startup_url()]
     
     def _get_startup_url(self) -> str:
-        """Get startup page URL (rigorous URL encoding)."""
-        data_dir = Path.home() / "BrowserFairyData"
-        
-        # 🔧 Fix: Use Path.as_uri() to properly build file URL
-        data_dir_uri = data_dir.as_uri()
-        
-        # Rigorous HTML content construction
-        html_content = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BrowserFairy Monitoring</title>
-</head>
-<body style="font-family: Arial, sans-serif; padding: 40px; text-align: center; background: #f5f5f5;">
-    <h1 style="color: #2196F3;">🧚 BrowserFairy Monitoring Active</h1>
-    <p style="font-size: 18px; color: #333;">Please browse normally in this Chrome window.</p>
-    <p style="color: #666;">Performance data is being collected automatically.</p>
-    <hr style="margin: 30px 0; border: none; border-top: 1px solid #ddd;">
-    <h3 style="color: #555;">Quick Access:</h3>
-    <p><a href="{data_dir_uri}" style="color: #2196F3; text-decoration: none;">📂 View Data Directory</a></p>
-    <p><small style="color: #999;">Close this Chrome window to stop monitoring</small></p>
-</body>
-</html>"""
-        
-        # 🔧 Fix: No URL encoding needed for simple HTML in data URLs
-        # Modern browsers handle data URLs with unencoded HTML content just fine
-        return "data:text/html;charset=utf-8," + html_content
+        """Get startup page URL - use a real URL to ensure monitoring works."""
+        # Use a lightweight real URL instead of data: URL
+        # This ensures the tab is detected and monitored
+        return "https://www.example.com"
     
     async def _wait_for_chrome_ready(self, timeout: int = 15):
         """Wait for Chrome to fully start and accept connections.

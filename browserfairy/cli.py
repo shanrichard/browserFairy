@@ -407,6 +407,9 @@ async def comprehensive_data_callback(data_manager, data: dict):
     hostname = data.get("hostname", "unknown")
     data_type = data.get("type", "unknown")
     
+    # Debug logging
+    logger.debug(f"comprehensive_data_callback: type={data_type}, hostname={hostname}")
+    
     try:
         if data_type == "memory":
             await data_manager.write_memory_data(hostname, data)
@@ -522,6 +525,12 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
         
         # Initialize comprehensive monitoring for existing tabs
         current_targets = await tab_monitor.get_current_targets()
+        
+        # DEBUG: Print initial targets
+        print(f"[DEBUG] Initial targets found: {len(current_targets)}")
+        for target_id, target_info in current_targets.items():
+            print(f"[DEBUG] Initial target: {target_info.get('hostname')} - {target_info.get('url', '')[:50]} ({target_id[:8]})")
+        
         for target_id, target_info in current_targets.items():
             hostname = target_info.get("hostname")
             if hostname:

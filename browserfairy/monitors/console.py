@@ -14,10 +14,10 @@ logger = logging.getLogger(__name__)
 class ConsoleMonitor:
     """Console log monitor - pure queue mode, no data_callback mixing."""
     
-    def __init__(self, connector: ChromeConnector, session_id: str,
+    def __init__(self, connector: ChromeConnector, target_id: str,
                  event_queue: asyncio.Queue, status_callback: Optional[Callable] = None):
         self.connector = connector
-        self.session_id = session_id
+        self.target_id = target_id  # Store targetId instead of sessionId
         self.event_queue = event_queue
         self.status_callback = status_callback
         self.limiter = EventLimiter()
@@ -29,8 +29,10 @@ class ConsoleMonitor:
         
     async def start_monitoring(self) -> None:
         """Start Console event listening."""
+        logger.debug(f"ConsoleMonitor.start_monitoring: registering handlers for target {self.target_id}")
         self.connector.on_event("Runtime.consoleAPICalled", self._on_console_message)
         self.connector.on_event("Runtime.exceptionThrown", self._on_exception_thrown)
+        logger.debug(f"ConsoleMonitor handlers registered")
     
     async def stop_monitoring(self) -> None:
         """Stop Console event listening with paired off_event."""
@@ -39,12 +41,12 @@ class ConsoleMonitor:
         
     async def _on_console_message(self, params: dict) -> None:
         """Handle console message - pure queue path: filter→limit→construct→enqueue."""
-        # sessionId filtering
-        if params.get("sessionId") != self.session_id:
-            return
-            
+        # TODO: Implement proper filtering based on execution context or URL
+        # For now, accept all console messages for this hostname
+        
         # Event frequency control
         if not self.limiter.should_process_console():
+            logger.debug("Console event rate limited")
             return
             
         # Construct lightweight event data
@@ -76,9 +78,8 @@ class ConsoleMonitor:
     
     async def _on_exception_thrown(self, params: dict) -> None:
         """Handle JavaScript exception - pure queue path: filter→construct→enqueue."""
-        # sessionId filtering
-        if params.get("sessionId") != self.session_id:
-            return
+        # TODO: Implement proper filtering based on execution context or URL
+        # For now, accept all exceptions for this hostname
             
         exception = params["exceptionDetails"]
         exception_data = {

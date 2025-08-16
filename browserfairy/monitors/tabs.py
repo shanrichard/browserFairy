@@ -95,16 +95,25 @@ class TabMonitor:
     async def _on_target_created(self, params: Dict[str, Any]) -> None:
         """Handle Target.targetCreated event."""
         target_info = params.get("targetInfo", {})
+        
+        # DEBUG: Print all target creation events
+        print(f"[DEBUG] Target.targetCreated: type={target_info.get('type')}, url={target_info.get('url', '')[:100]}, targetId={target_info.get('targetId', '')[:8]}")
+        
         if target_info.get("type") != "page":
+            print(f"[DEBUG] Ignoring non-page target: {target_info.get('type')}")
             return
             
         target_id = target_info.get("targetId")
         if not target_id:
+            print("[DEBUG] No targetId in target_info, skipping")
             return
             
         hostname = extract_hostname(target_info.get("url", ""))
         if not hostname:
+            print(f"[DEBUG] No valid hostname extracted from URL: {target_info.get('url', '')}")
             return
+        
+        print(f"[DEBUG] Valid page target found: {hostname} ({target_id[:8]})")
             
         # Update internal state with lock protection
         async with self.targets_lock:
@@ -128,7 +137,12 @@ class TabMonitor:
     async def _on_target_destroyed(self, params: Dict[str, Any]) -> None:
         """Handle Target.targetDestroyed event."""
         target_id = params.get("targetId")
+        
+        # DEBUG: Print all target destruction events
+        print(f"[DEBUG] Target.targetDestroyed: targetId={target_id[:8] if target_id else 'None'}")
+        
         if not target_id:
+            print("[DEBUG] No targetId in destruction event, skipping")
             return
             
         # Remove from internal state with lock protection
@@ -150,11 +164,17 @@ class TabMonitor:
     async def _on_target_info_changed(self, params: Dict[str, Any]) -> None:
         """Handle Target.targetInfoChanged event."""
         target_info = params.get("targetInfo", {})
+        
+        # DEBUG: Print all target info changes
+        print(f"[DEBUG] Target.targetInfoChanged: type={target_info.get('type')}, url={target_info.get('url', '')[:100]}, targetId={target_info.get('targetId', '')[:8]}")
+        
         if target_info.get("type") != "page":
+            print(f"[DEBUG] Ignoring non-page target info change: {target_info.get('type')}")
             return
             
         target_id = target_info.get("targetId")
         if not target_id:
+            print("[DEBUG] No targetId in target info change, skipping")
             return
             
         hostname = extract_hostname(target_info.get("url", ""))

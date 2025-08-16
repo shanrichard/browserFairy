@@ -288,14 +288,14 @@ class MemoryCollector:
         from ..analysis.correlation import SimpleCorrelationEngine
         
         self.console_monitor = ConsoleMonitor(
-            self.connector, 
-            self.session_id, 
+            self.connector,
+            self.session_id,  # Use correct sessionId for filtering
             self.event_queue,
             self.status_callback
         )
         self.network_monitor = NetworkMonitor(
-            self.connector, 
-            self.session_id, 
+            self.connector,
+            self.session_id,  # Use correct sessionId for filtering
             self.event_queue,
             self.status_callback
         )
@@ -315,6 +315,7 @@ class MemoryCollector:
         
     async def _consume_events(self):
         """Event consumer coroutine - proper stop conditions and lifecycle management."""
+        logger.debug(f"Event consumer started for {self.hostname}")
         try:
             while self.consumer_running and self.enable_comprehensive:
                 try:
@@ -328,6 +329,7 @@ class MemoryCollector:
                         event_type, event_data = await asyncio.wait_for(
                             self.event_queue.get(), timeout=1.0
                         )
+                        logger.debug(f"Got event from queue: {event_type}")
                         events_batch.append((event_type, event_data))
                         
                         # Try to collect more events (non-blocking)

@@ -168,11 +168,34 @@ class ChromeConnector:
                         method = data["method"]
                         params = data.get("params", {}).copy()
                         
-                        # ✅ Critical fix: inject sessionId to params for monitor filtering
-                        if "sessionId" in data:
-                            params["sessionId"] = data["sessionId"]
+                        # Debug: Log all events with Runtime or Network prefix
+                        if method.startswith("Runtime.") or method.startswith("Network."):
+                            logger.debug(f"Event: {method}, sessionId in data: {data.get('sessionId')}")
                         
-                        await self._dispatch_event(method, params)
+                        # Handle Target.receivedMessageFromTarget events
+                        if method == "Target.receivedMessageFromTarget":
+                            logger.debug(f"Received Target.receivedMessageFromTarget, sessionId={params.get('sessionId')}")
+                            # Unpack the nested message from target session
+                            session_id = params.get("sessionId")
+                            message_str = params.get("message")
+                            if session_id and message_str:
+                                try:
+                                    target_data = json.loads(message_str)
+                                    if "method" in target_data:
+                                        # Add sessionId to the params for filtering
+                                        target_params = target_data.get("params", {}).copy()
+                                        target_params["sessionId"] = session_id
+                                        # Dispatch the unpacked event
+                                        await self._dispatch_event(target_data["method"], target_params)
+                                except json.JSONDecodeError:
+                                    logger.warning(f"Failed to decode target message: {message_str[:100]}")
+                        else:
+                            # For flattened mode, sessionId is at the top level
+                            # ✅ Critical fix: inject sessionId to params for monitor filtering
+                            if "sessionId" in data:
+                                params["sessionId"] = data["sessionId"]
+                            
+                            await self._dispatch_event(method, params)
                     
                 except json.JSONDecodeError:
                     logger.warning("Received invalid JSON message")
@@ -261,6 +284,7 @@ class ChromeConnector:
     async def _dispatch_event(self, method: str, params: Dict[str, Any]) -> None:
         """Dispatch an event to registered handlers."""
         if method in self.event_handlers:
+            logger.debug(f"Dispatching {method} to {len(self.event_handlers[method])} handlers")
             for handler in self.event_handlers[method]:
                 try:
                     # Call handler - can be sync or async
