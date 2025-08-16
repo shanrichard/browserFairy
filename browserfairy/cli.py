@@ -251,6 +251,10 @@ async def monitor_memory(host: str, port: int, duration: Optional[int] = None) -
                 elif collector:
                     # Same hostname, just update page info
                     collector.update_page_info(payload["url"], payload.get("title", ""))
+                else:
+                    # No collector yet (e.g. started as chrome://newtab then navigated to http/https)
+                    await memory_monitor.create_collector(target_id, hostname)
+                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] TAB_UPGRADED: {hostname} - Started memory monitoring on URL change ({target_id[:8]})")
         
         # Set up tab monitor with memory integration
         tab_monitor.event_callback = on_tab_event
@@ -347,6 +351,10 @@ async def start_data_collection(host: str, port: int, duration: Optional[int] = 
                 elif collector:
                     # Same hostname, just update page info
                     collector.update_page_info(payload["url"], payload.get("title", ""))
+                else:
+                    # No collector yet (tab started as chrome://newtab then navigated to web)
+                    await memory_monitor.create_collector(target_id, hostname)
+                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] TAB_UPGRADED: {hostname} - Started monitoring on URL change ({target_id[:8]})")
         
         # 启动监控（复用现有流程）
         tab_monitor.event_callback = on_tab_event
@@ -518,6 +526,20 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
                 elif collector:
                     # Same hostname, just update page info
                     collector.update_page_info(payload["url"], payload.get("title", ""))
+                else:
+                    # No collector yet (e.g., from chrome://newtab to https://...)
+                    collector = MemoryCollector(
+                        connector=connector,
+                        target_id=target_id,
+                        hostname=hostname,
+                        data_callback=unified_callback,
+                        enable_comprehensive=True,
+                        status_callback=status_callback
+                    )
+                    await collector.attach()
+                    memory_monitor.collectors[target_id] = collector
+                    collector.collection_task = asyncio.create_task(collector.start_collection())
+                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] TAB_UPGRADED: {hostname} - Comprehensive monitoring started on URL change ({target_id[:8]})")
         
         # Start monitoring
         tab_monitor.event_callback = on_tab_event
@@ -683,6 +705,102 @@ async def run_daemon_start_monitoring(log_file: Optional[str] = None,
         loop.close()
 
 
+async def monitor_single_site(host: str, port: int, duration: Optional[int] = None) -> int:
+    """Minimal single-site monitor for https://t.signalplus.com.
+
+    Connects to existing Chrome, opens the target URL, attaches a single session,
+    and enables memory + console + network monitoring for that tab only.
+    """
+    connector = ChromeConnector(host=host, port=port)
+    exit_event = asyncio.Event()
+
+    # When connection to Chrome is lost, stop gracefully
+    connector.set_connection_lost_callback(lambda: exit_event.set())
+
+    TARGET_URL = "https://t.signalplus.com"
+    HOSTNAME = "t.signalplus.com"
+
+    try:
+        print(f"Connecting to Chrome at {host}:{port}...")
+        await connector.connect()
+        print("✓ Connected to Chrome")
+
+        # Create target (tab) with the URL
+        create_resp = await connector.call("Target.createTarget", {"url": TARGET_URL})
+        target_id = create_resp.get("targetId")
+        if not target_id:
+            print("Failed to create target for SignalPlus site", file=sys.stderr)
+            return 1
+
+        # Initialize data manager
+        data_manager = DataManager(connector)
+        await data_manager.start()
+        print(f"✓ Session directory: {data_manager.session_dir}")
+
+        # Create unified data callback using partial
+        from functools import partial
+        unified_callback = partial(comprehensive_data_callback, data_manager)
+
+        # Status callback (minimal)
+        def status_callback(event_type: str, payload: dict) -> None:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if event_type == "console_error":
+                print(f"[{ts}] CONSOLE_ERROR: {payload.get('level','')} {payload.get('message','')}")
+            elif event_type == "large_request":
+                print(f"[{ts}] LARGE_REQUEST: {payload.get('url','')} ({payload.get('size_mb',0):.1f}MB)")
+            elif event_type == "large_response":
+                print(f"[{ts}] LARGE_RESPONSE: {payload.get('url','')} ({payload.get('size_mb',0):.1f}MB)")
+
+        # Create single collector for the site
+        collector = MemoryCollector(
+            connector=connector,
+            target_id=target_id,
+            hostname=HOSTNAME,
+            data_callback=unified_callback,
+            enable_comprehensive=True,
+            status_callback=status_callback
+        )
+
+        await collector.attach()
+        # Start memory collection
+        collector.collection_task = asyncio.create_task(collector.start_collection())
+        # Update initial page info
+        collector.update_page_info(TARGET_URL, "")
+
+        print(f"✓ Monitoring started for {TARGET_URL}")
+        print("✓ Writing to:", data_manager.session_dir / HOSTNAME)
+
+        # Run until duration or connection lost
+        if duration and duration > 0:
+            await asyncio.sleep(duration)
+            print(f"\nSingle-site monitoring duration ({duration}s) completed.")
+        else:
+            print("Single-site monitoring running... (Close Chrome or Ctrl+C to stop)")
+            try:
+                await exit_event.wait()
+            except KeyboardInterrupt:
+                print("\nStopping single-site monitoring...")
+
+        return 0
+
+    except ChromeConnectionError as e:
+        print(f"Connection failed: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
+        return 1
+    finally:
+        try:
+            if 'data_manager' in locals():
+                await data_manager.stop()
+            if 'collector' in locals():
+                await collector.stop_collection()
+        except Exception:
+            pass
+        if connector.websocket:
+            await connector.disconnect()
+
+
 async def analyze_sites(hostname: Optional[str] = None) -> int:
     """分析网站数据"""
     manager = SiteDataManager()
@@ -836,6 +954,12 @@ async def main() -> None:
     )
     
     parser.add_argument(
+        "--monitor-signalplus",
+        action="store_true",
+        help="Monitor only https://t.signalplus.com in a single tab (minimal mode)"
+    )
+    
+    parser.add_argument(
         "--start-monitoring",
         action="store_true", 
         help="Start complete monitoring service with automatic Chrome launch"
@@ -919,6 +1043,9 @@ async def main() -> None:
             # Foreground mode: call original function (new parameters are None for compatibility)
             exit_code = await monitor_comprehensive(args.host, args.port, args.duration)
         sys.exit(exit_code)
+    elif args.monitor_signalplus:
+        exit_code = await monitor_single_site(args.host, args.port, args.duration)
+        sys.exit(exit_code)
     elif args.start_monitoring:
         if args.daemon:
             # daemon模式处理
@@ -947,6 +1074,7 @@ async def main() -> None:
         print("  --start-data-collection Start data collection with file output")
         print("  --monitor-comprehensive Comprehensive monitoring (memory + console + network + correlations)")
         print("                         Add --daemon to run in background mode")
+        print("  --monitor-signalplus    Monitor only https://t.signalplus.com (single-site minimal mode)")
         print("  --start-monitoring      Start complete monitoring service with automatic Chrome launch")
         print("                         Add --daemon to run in background mode")
         print("  --analyze-sites [HOST]  Analyze collected website data (specify hostname or leave empty for overview)")

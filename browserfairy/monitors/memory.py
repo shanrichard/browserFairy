@@ -54,37 +54,51 @@ class MemoryCollector:
         self.consumer_running = False  # Independent lifecycle for event consumer
         
     async def attach(self) -> None:
-        """Establish Target-level session."""
+        """Establish Target-level session with retries and sane timeouts."""
         try:
-            response = await self.connector.call(
-                "Target.attachToTarget",
-                {"targetId": self.target_id, "flatten": True}
-            )
-            self.session_id = response["sessionId"]
-            
+            # Retry attach a few times for heavy pages
+            last_err = None
+            for attempt in range(3):
+                try:
+                    response = await self.connector.call(
+                        "Target.attachToTarget",
+                        {"targetId": self.target_id, "flatten": True},
+                        timeout=20.0
+                    )
+                    self.session_id = response["sessionId"]
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    await asyncio.sleep(0.3 * (attempt + 1))
+
+            if not self.session_id:
+                raise ChromeConnectionError(f"Failed to attach to target {self.target_id}: {last_err}")
+
             # Optional: Enable Performance domain (some environments need this)
             try:
                 await self.connector.call(
                     "Performance.enable",
-                    session_id=self.session_id
+                    session_id=self.session_id,
+                    timeout=15.0
                 )
             except Exception:
-                # Failure is acceptable, not all environments require explicit enable
+                # Failure is acceptable; proceed without explicit enable
                 pass
-                
+
             logger.debug(f"Attached to target {self.target_id} with session {self.session_id}")
-            
-            # New: Enable comprehensive monitoring if requested
+
+            # Enable comprehensive monitoring if requested
             if self.enable_comprehensive:
                 await self._enable_comprehensive_monitoring()
-            
+
             # Status callback notification
             if self.status_callback:
                 self.status_callback("site_discovered", {
                     "hostname": self.hostname,
                     "target_id": self.target_id
                 })
-            
+
         except Exception as e:
             raise ChromeConnectionError(f"Failed to attach to target {self.target_id}: {e}")
     

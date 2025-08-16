@@ -25,6 +25,8 @@ class DataManager:
         self.data_writer = DataWriter(self.session_dir)
         self.storage_monitor = StorageMonitor(connector)
         self.running = False
+        # 维护 origin → hostname 的映射，便于将配额数据同步到站点目录
+        self.origin_to_hostname: Dict[str, str] = {}
     
     def _create_session_directory(self) -> Path:
         """创建会话目录"""
@@ -42,6 +44,7 @@ class DataManager:
         await self._create_session_overview()
         
         # 启动存储监控，设置回调到文件写入
+        logger.debug("DataManager.start: initializing StorageMonitor")
         self.storage_monitor.set_data_callback(self._on_storage_data)
         await self.storage_monitor.start()
         
@@ -88,7 +91,28 @@ class DataManager:
         
         if data_type == "quota":
             # 配额数据写入storage_global.jsonl
+            logger.debug(f"DataManager._on_storage_data: writing global quota for origin={storage_data.get('origin')}")
             await self.data_writer.append_jsonl("storage_global.jsonl", storage_data)
+            # 同步写入到站点目录（若能解析到对应hostname）
+            origin = storage_data.get("origin")
+            hostname = None
+            if origin:
+                hostname = self.origin_to_hostname.get(origin)
+                if not hostname:
+                    # 回退：从 origin 直接解析 hostname
+                    try:
+                        parsed = urlparse(origin)
+                        hostname = parsed.hostname
+                    except Exception:
+                        hostname = None
+            if hostname:
+                site_record = dict(storage_data)
+                site_record["hostname"] = hostname
+                file_path = f"{hostname}/storage.jsonl"
+                logger.debug(f"DataManager._on_storage_data: writing per-site quota hostname={hostname}")
+                await self.data_writer.append_jsonl(file_path, site_record)
+            else:
+                logger.debug("DataManager._on_storage_data: no hostname mapping for origin; skip per-site write")
         # 其他类型（如IndexedDB事件）暂不处理，留到后续版本
     
     async def _create_session_overview(self) -> None:
@@ -117,6 +141,7 @@ class DataManager:
             return
             
         file_path = f"{hostname}/memory.jsonl"
+        logger.debug(f"DataManager.write_memory_data: append to {file_path}")
         await self.data_writer.append_jsonl(file_path, memory_data)
         
         # 触发该hostname的存储监控（从内存数据的URL中正确提取origin）
@@ -124,6 +149,12 @@ class DataManager:
         if url:
             origin = self._extract_origin_from_url(url)
             if origin:
+                # 记录映射并首次立即采集
+                prev = self.origin_to_hostname.get(origin)
+                if prev and prev != hostname:
+                    logger.debug(f"DataManager: origin {origin} remapped from {prev} to {hostname}")
+                self.origin_to_hostname[origin] = hostname
+                logger.debug(f"DataManager: tracking origin {origin} for hostname {hostname}")
                 await self.storage_monitor.track_origin(origin)
     
     async def write_console_data(self, hostname: str, console_data: Dict[str, Any]) -> None:

@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from ..core.connector import ChromeConnector
-from .event_limiter import EventLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +19,6 @@ class ConsoleMonitor:
         self.target_id = target_id  # Store targetId instead of sessionId
         self.event_queue = event_queue
         self.status_callback = status_callback
-        self.limiter = EventLimiter()
         self.hostname = None
         
     def set_hostname(self, hostname: str):
@@ -44,11 +42,6 @@ class ConsoleMonitor:
         # TODO: Implement proper filtering based on execution context or URL
         # For now, accept all console messages for this hostname
         
-        # Event frequency control
-        if not self.limiter.should_process_console():
-            logger.debug("Console event rate limited")
-            return
-            
         # Construct lightweight event data
         console_data = {
             "timestamp": datetime.now(timezone.utc).isoformat(),

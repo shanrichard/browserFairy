@@ -27,10 +27,12 @@ class StorageMonitor:
         if self.running:
             return
             
-        # 启动配额检查任务
+        # 标记为运行中，并启动配额检查任务（即使Storage.enable不可用也要运行）
+        self.running = True
         self.quota_task = asyncio.create_task(self._quota_monitoring_loop())
+        logger.debug("StorageMonitor.start: quota monitoring loop started")
         
-        # 启用存储事件监听（可选，失败不影响基础功能）
+        # 尝试启用存储事件监听（可选）
         try:
             await self._enable_storage_events()
         except Exception as e:
@@ -38,13 +40,11 @@ class StorageMonitor:
     
     async def _enable_storage_events(self) -> None:
         """启用存储domain事件监听"""
-        # 必须先调用Storage.enable才能接收事件推送
+        # 必须先调用Storage.enable才能接收事件推送（某些环境不支持此方法）
         await self.connector.call("Storage.enable")
         
         # 可选：设置事件处理器（需要connector支持事件监听）
         # 当前阶段暂不实现IndexedDB事件处理，专注配额监控
-            
-        self.running = True
         
     async def stop(self) -> None:
         """停止监控和清理（复用现有清理模式）"""
@@ -59,19 +59,31 @@ class StorageMonitor:
             self.quota_task = None
     
     async def track_origin(self, origin: str) -> None:
-        """为origin启用IndexedDB监控"""
+        """为origin启用IndexedDB监控，并在首次跟踪时立即采集一次配额。"""
         if not self.running or origin in self.tracked_origins:
             return
             
+        # 尝试启用IndexedDB跟踪（可失败），但不影响后续立即采集
         try:
             await self.connector.call(
                 "Storage.trackIndexedDBForOrigin",
                 {"origin": origin}
             )
-            self.tracked_origins.add(origin)
-            logger.debug(f"Started tracking storage for {origin}")
+            logger.debug(f"StorageMonitor.track_origin: trackIndexedDB enabled for {origin}")
         except Exception as e:
-            logger.debug(f"Failed to track storage for {origin}: {e}")
+            logger.debug(f"StorageMonitor.track_origin: trackIndexedDB not available for {origin}: {e}")
+
+        # 无论是否支持IndexedDB事件，都加入跟踪集合并立即采集一次
+        self.tracked_origins.add(origin)
+        logger.debug(f"StorageMonitor.track_origin: started tracking {origin}")
+
+        try:
+            quota_data = await self._collect_quota_info(origin)
+            if quota_data and self.data_callback:
+                logger.debug(f"StorageMonitor.track_origin: immediate quota collected for {origin}")
+                await self._safe_callback("quota", quota_data)
+        except Exception as e:
+            logger.debug(f"StorageMonitor.track_origin: immediate quota failed for {origin}: {e}")
     
     async def _quota_monitoring_loop(self) -> None:
         """配额监控循环（复用MemoryCollector采样模式）"""
@@ -86,8 +98,9 @@ class StorageMonitor:
                     origin = next(iter(self.tracked_origins))
                     quota_data = await self._collect_quota_info(origin)
                     if quota_data and self.data_callback:
+                        logger.debug(f"StorageMonitor.loop: quota collected for {origin}")
                         await self._safe_callback("quota", quota_data)
-                    
+                
             except Exception as e:
                 logger.debug(f"Storage quota collection failed: {e}")
                 
@@ -114,7 +127,7 @@ class StorageMonitor:
                 usage_details[storage_type] = item.get("usage", 0)
                 
             # 格式化输出，与内存数据格式保持一致
-            return {
+            record = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "type": "storage_quota", 
                 "origin": origin,
@@ -126,6 +139,8 @@ class StorageMonitor:
                     "warningLevel": self._calculate_warning_level(usage, quota)
                 }
             }
+            logger.debug(f"StorageMonitor._collect_quota_info: origin={origin} usage={usage} quota={quota}")
+            return record
             
         except Exception as e:
             logger.debug(f"Failed to collect quota info for {origin}: {e}")

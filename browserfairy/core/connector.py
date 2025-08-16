@@ -28,6 +28,8 @@ class ChromeConnector:
         self.event_handlers: Dict[str, List[Callable]] = {}
         self.message_task: Optional[asyncio.Task] = None
         self.connection_lost_callback: Optional[Callable] = None
+        # Default per-request response timeout (seconds) - increased for heavy pages
+        self.call_timeout: float = 15.0
         
     async def connect(self, retries: int = 3) -> None:
         """Establish connection to Chrome DevTools Protocol with retry logic."""
@@ -39,8 +41,17 @@ class ChromeConnector:
                 ws_url = await self._discover_websocket_url()
                 
                 # Step 2: Connect to WebSocket with timeout
+                # Important: Set ping_interval and ping_timeout to maintain connection
+                # ping_interval=20: Send ping every 20 seconds
+                # ping_timeout=10: Wait 10 seconds for pong response
+                # max_size=100MB: Allow larger messages for heavy pages
                 self.websocket = await asyncio.wait_for(
-                    websockets.connect(ws_url), 
+                    websockets.connect(
+                        ws_url,
+                        ping_interval=20,
+                        ping_timeout=10,
+                        max_size=100 * 1024 * 1024  # 100MB max message size
+                    ), 
                     timeout=5.0
                 )
                 
@@ -105,7 +116,8 @@ class ChromeConnector:
         return data["webSocketDebuggerUrl"]
         
     async def call(self, method: str, params: Optional[Dict[str, Any]] = None, 
-                   session_id: Optional[str] = None) -> Dict[str, Any]:
+                   session_id: Optional[str] = None,
+                   timeout: Optional[float] = None) -> Dict[str, Any]:
         """Send a Chrome DevTools Protocol command and wait for response."""
         if not self.websocket:
             raise ChromeConnectionError("Not connected to Chrome")
@@ -133,8 +145,9 @@ class ChromeConnector:
             # Send message
             await self.websocket.send(json.dumps(message))
             
-            # Wait for response with timeout
-            response = await asyncio.wait_for(future, timeout=5.0)
+            # Wait for response with timeout (use per-call override or default)
+            wait_timeout = timeout if timeout is not None else self.call_timeout
+            response = await asyncio.wait_for(future, timeout=wait_timeout)
             return response
             
         except asyncio.TimeoutError:

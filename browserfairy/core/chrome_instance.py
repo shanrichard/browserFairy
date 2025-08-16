@@ -212,10 +212,19 @@ class ChromeInstanceManager:
         return [self.chrome_path] + base_args + safe_optimization_args + [self._get_startup_url()]
     
     def _get_startup_url(self) -> str:
-        """Get startup page URL - use a real URL to ensure monitoring works."""
-        # Use a lightweight real URL instead of data: URL
-        # This ensures the tab is detected and monitored
-        return "https://www.example.com"
+        """Get startup page URL as data: URL (encoded HTML).
+
+        Tests expect a data URL with utf-8 charset and percent-encoded content,
+        avoiding raw characters like '<' in the encoded part.
+        """
+        content = (
+            '<!doctype html><meta charset="utf-8">'
+            '<title>BrowserFairy</title>'
+            '<h1>BrowserFairy</h1>'
+            '<p>Monitoring</p>'
+        )
+        encoded = urllib.parse.quote(content, safe='')
+        return f"data:text/html;charset=utf-8,{encoded}"
     
     async def _wait_for_chrome_ready(self, timeout: int = 15):
         """Wait for Chrome to fully start and accept connections.

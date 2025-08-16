@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from ..core.connector import ChromeConnector
-from .event_limiter import EventLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +20,6 @@ class NetworkMonitor:
         self.event_queue = event_queue
         self.status_callback = status_callback
         self.pending_requests: dict = {}  # requestId -> request metadata
-        self.limiter = EventLimiter()
         self.hostname = None
         
     def set_hostname(self, hostname: str):
@@ -46,10 +44,6 @@ class NetworkMonitor:
         """Request start - pure queue path: filter→limit→construct metadata→enqueue."""
         # sessionId filtering
         if params.get("sessionId") != self.session_id:
-            return
-            
-        # Event frequency control
-        if not self.limiter.should_process_network():
             return
             
         request_id = params["requestId"]

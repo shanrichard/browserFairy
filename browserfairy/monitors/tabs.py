@@ -287,8 +287,16 @@ class TabMonitor:
                     if target["hostname"] == hostname]
     
     async def _fire_event(self, event_type: str, payload: Dict[str, Any]) -> None:
-        """Fire event callback if set."""
-        if self.event_callback:
+        """Fire event callback without blocking the message loop.
+
+        Heavy operations (like Target.attachToTarget) must not run inline in the
+        WebSocket event handling path, otherwise CDP keepalive may timeout.
+        Schedule the callback as a background task.
+        """
+        if not self.event_callback:
+            return
+
+        async def _run_callback():
             try:
                 if asyncio.iscoroutinefunction(self.event_callback):
                     await self.event_callback(event_type, payload)
@@ -296,3 +304,9 @@ class TabMonitor:
                     self.event_callback(event_type, payload)
             except Exception as e:
                 logger.warning(f"Error in event callback: {e}")
+
+        try:
+            asyncio.create_task(_run_callback())
+        except RuntimeError:
+            # Fallback if no running loop; execute inline (tests)
+            await _run_callback()
