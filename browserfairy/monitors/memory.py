@@ -151,6 +151,7 @@ class MemoryCollector:
         
         # 4. Build output (using url/title maintained by TabMonitor, no duplicate fetching)
         return {
+            "type": "memory",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "hostname": self.hostname,
             "targetId": self.target_id,

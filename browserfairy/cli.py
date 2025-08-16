@@ -412,7 +412,7 @@ async def comprehensive_data_callback(data_manager, data: dict):
             await data_manager.write_memory_data(hostname, data)
         elif data_type in ["console", "exception"]:
             await data_manager.write_console_data(hostname, data)
-        elif data_type in ["network_request_complete", "network_request_failed", "network_start"]:
+        elif data_type in ["network_request_complete", "network_request_failed", "network_request_start"]:
             await data_manager.write_network_data(hostname, data)
         elif data_type == "correlation":
             await data_manager.write_correlation_data(hostname, data)
