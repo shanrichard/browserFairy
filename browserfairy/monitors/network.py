@@ -92,7 +92,7 @@ class NetworkMonitor:
         
         # Single exit: enqueue for processing
         try:
-            self.event_queue.put_nowait(("network_start", request_data))
+            self.event_queue.put_nowait(("network_request_start", request_data))
         except asyncio.QueueFull:
             logger.warning("Network event queue full, dropping request start")
     
@@ -154,7 +154,7 @@ class NetworkMonitor:
         
         # Single exit: enqueue for processing
         try:
-            self.event_queue.put_nowait(("network_complete", request_data))
+            self.event_queue.put_nowait(("network_request_complete", request_data))
         except asyncio.QueueFull:
             logger.warning("Network event queue full, dropping request completion")
     
@@ -179,7 +179,7 @@ class NetworkMonitor:
         
         # Single exit: enqueue for processing
         try:
-            self.event_queue.put_nowait(("network_failed", request_data))
+            self.event_queue.put_nowait(("network_request_failed", request_data))
         except asyncio.QueueFull:
             logger.warning("Network event queue full, dropping request failure")
     
