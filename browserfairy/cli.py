@@ -662,8 +662,16 @@ async def run_daemon_start_monitoring(log_file: Optional[str] = None,
             pass
     atexit.register(cleanup)
     
+    # Create new event loop in child process
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     # 调用start_monitoring_service而不是monitor_comprehensive
-    return await start_monitoring_service(log_file, duration)
+    try:
+        return loop.run_until_complete(start_monitoring_service(log_file, duration))
+    finally:
+        loop.close()
 
 
 async def analyze_sites(hostname: Optional[str] = None) -> int:
@@ -993,17 +1001,25 @@ async def run_daemon_comprehensive(host: str, port: int, duration: Optional[int]
         except:
             pass  # Ignore write errors in daemon mode
     
+    # Create new event loop in child process
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     # Create exit event
     exit_event = asyncio.Event()
     
     # Call modified monitor_comprehensive
-    return await monitor_comprehensive(
-        host=host, 
-        port=port, 
-        duration=duration,
-        status_callback=log_status,
-        exit_event=exit_event
-    )
+    try:
+        return loop.run_until_complete(monitor_comprehensive(
+            host=host, 
+            port=port, 
+            duration=duration,
+            status_callback=log_status,
+            exit_event=exit_event
+        ))
+    finally:
+        loop.close()
 
 
 def cli_entry_point():

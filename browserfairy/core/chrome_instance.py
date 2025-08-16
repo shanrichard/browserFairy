@@ -237,8 +237,9 @@ class ChromeInstanceManager:
 </body>
 </html>"""
         
-        # 🔧 Fix: Use correct safe character set to encode data URL
-        return "data:text/html;charset=utf-8," + urllib.parse.quote(html_content, safe=':/?#[]@!$&\'()*+,;=')
+        # 🔧 Fix: No URL encoding needed for simple HTML in data URLs
+        # Modern browsers handle data URLs with unencoded HTML content just fine
+        return "data:text/html;charset=utf-8," + html_content
     
     async def _wait_for_chrome_ready(self, timeout: int = 15):
         """Wait for Chrome to fully start and accept connections.
