@@ -1,0 +1,25 @@
+[project]
+name = "browserfairy"
+version = "0.1.0"
+description = "Chrome performance monitoring tool"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "websockets>=12.0",
+    "httpx>=0.25.0",
+]
+
+[project.scripts]
+browserfairy = "browserfairy.cli:cli_entry_point"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.1.0",
+]

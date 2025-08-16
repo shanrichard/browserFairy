@@ -1,0 +1,1 @@
+"""Analysis module for correlation and pattern detection."""

@@ -1,0 +1,155 @@
+"""Console monitoring functionality for comprehensive monitoring."""
+
+import asyncio
+import logging
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional
+
+from ..core.connector import ChromeConnector
+from .event_limiter import EventLimiter
+
+logger = logging.getLogger(__name__)
+
+
+class ConsoleMonitor:
+    """Console log monitor - pure queue mode, no data_callback mixing."""
+    
+    def __init__(self, connector: ChromeConnector, session_id: str,
+                 event_queue: asyncio.Queue, status_callback: Optional[Callable] = None):
+        self.connector = connector
+        self.session_id = session_id
+        self.event_queue = event_queue
+        self.status_callback = status_callback
+        self.limiter = EventLimiter()
+        self.hostname = None
+        
+    def set_hostname(self, hostname: str):
+        """Set hostname for data grouping."""
+        self.hostname = hostname
+        
+    async def start_monitoring(self) -> None:
+        """Start Console event listening."""
+        self.connector.on_event("Runtime.consoleAPICalled", self._on_console_message)
+        self.connector.on_event("Runtime.exceptionThrown", self._on_exception_thrown)
+    
+    async def stop_monitoring(self) -> None:
+        """Stop Console event listening with paired off_event."""
+        self.connector.off_event("Runtime.consoleAPICalled", self._on_console_message)
+        self.connector.off_event("Runtime.exceptionThrown", self._on_exception_thrown)
+        
+    async def _on_console_message(self, params: dict) -> None:
+        """Handle console message - pure queue path: filter→limit→construct→enqueue."""
+        # sessionId filtering
+        if params.get("sessionId") != self.session_id:
+            return
+            
+        # Event frequency control
+        if not self.limiter.should_process_console():
+            return
+            
+        # Construct lightweight event data
+        console_data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "console",
+            "level": params["type"],
+            "message": self._extract_and_truncate_message(params.get("args", [])),
+            "source": self._extract_source(params),
+            "hostname": self.hostname
+        }
+        
+        # Single exit: enqueue for processing (drop when full)
+        try:
+            self.event_queue.put_nowait(("console", console_data))
+        except asyncio.QueueFull:
+            logger.warning("Console event queue full, dropping event")
+            
+        # Status callback (important events only, non-blocking)
+        if params["type"] in ["error", "warn"] and self.status_callback:
+            try:
+                self.status_callback("console_error", {
+                    "level": params["type"],
+                    "message": console_data["message"][:50],
+                    "source": console_data["source"].get("function", "unknown")
+                })
+            except Exception as e:
+                logger.warning(f"Error in console status callback: {e}")
+    
+    async def _on_exception_thrown(self, params: dict) -> None:
+        """Handle JavaScript exception - pure queue path: filter→construct→enqueue."""
+        # sessionId filtering
+        if params.get("sessionId") != self.session_id:
+            return
+            
+        exception = params["exceptionDetails"]
+        exception_data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "exception",
+            "message": exception["text"][:500],
+            "source": {
+                "url": exception.get("url", "")[:200],
+                "line": exception.get("lineNumber", 0),
+                "column": exception.get("columnNumber", 0)
+            },
+            "stackTrace": self._format_stack_trace(exception.get("stackTrace", {})),
+            "hostname": self.hostname
+        }
+        
+        # Single exit: enqueue for processing
+        try:
+            self.event_queue.put_nowait(("exception", exception_data))
+        except asyncio.QueueFull:
+            logger.warning("Exception event queue full, dropping event")
+        
+        # Status callback notification
+        if self.status_callback:
+            try:
+                self.status_callback("console_error", {
+                    "level": "exception",
+                    "message": exception_data["message"][:50],
+                    "source": exception_data["source"]["url"][:30]
+                })
+            except Exception as e:
+                logger.warning(f"Error in exception status callback: {e}")
+    
+    def _extract_and_truncate_message(self, args: list, max_length: int = 500) -> str:
+        """Unified method: extract and limit message length to ≤500 characters."""
+        messages = []
+        for arg in args:
+            if arg.get("type") == "string":
+                messages.append(arg.get("value", ""))
+            elif arg.get("type") == "object":
+                messages.append(str(arg.get("description", arg.get("value", ""))))
+            else:
+                messages.append(str(arg.get("value", "")))
+        
+        full_message = " ".join(messages)
+        if len(full_message) <= max_length:
+            return full_message
+        return full_message[:max_length] + "...[truncated]"
+    
+    def _extract_source(self, params: dict) -> dict:
+        """Extract call source information."""
+        stack = params.get("stackTrace", {})
+        if stack and stack.get("callFrames"):
+            frame = stack["callFrames"][0]
+            return {
+                "url": frame.get("url", "")[:200],
+                "line": frame.get("lineNumber", 0),
+                "function": frame.get("functionName", "anonymous")[:100]
+            }
+        return {"url": "", "line": 0, "function": "unknown"}
+    
+    def _format_stack_trace(self, stack: dict) -> list:
+        """Format stack trace information (limit depth to 5 levels)."""
+        if not stack or not stack.get("callFrames"):
+            return []
+        
+        return [
+            {
+                "function": frame.get("functionName", "anonymous")[:100],
+                "url": frame.get("url", "")[:200],
+                "line": frame.get("lineNumber", 0),
+                "column": frame.get("columnNumber", 0)
+            }
+            for frame in stack["callFrames"][:5]
+        ]
