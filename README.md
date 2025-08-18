@@ -181,6 +181,31 @@ browserfairy --snapshot-storage-once \
 └── monitor.pid                    # 后台进程PID
 ```
 
+### ✅ 去重与事件唯一标识 `event_id`（新增）
+- 目的：为 memory / console / network 三类事件生成稳定、轻量的唯一标识，便于后续去重、比对与快速聚合；不改变任何原始字段，仅新增一个辅助字段。
+- 算法：使用 Python 标准库 `hashlib.blake2s` 生成短摘要（10字节→20位hex），将少量关键字段按固定顺序拼接后计算；相同输入→相同 `event_id`，不含随机因素。
+- 性能：计算量微秒级，远小于 JSON 序列化与磁盘写入（毫秒级），对高频场景开销可忽略。
+
+生成规则（按事件类型）：
+- memory（写入 `{hostname}/memory.jsonl`）
+  - 参与字段：`type, hostname, timestamp, targetId, sessionId, url`
+- console（写入 `{hostname}/console.jsonl`）
+  - 参与字段：`type=console, hostname, timestamp, level, message, source.url, source.line`
+- exception（同 console 文件）
+  - 参与字段：`type=exception, hostname, timestamp, message, source.url, source.line, source.column`
+- network_request_start（写入 `{hostname}/network.jsonl`）
+  - 参与字段：`type=network_request_start, hostname, timestamp, requestId, method, url`
+- network_request_complete（同上）
+  - 参与字段：`type=network_request_complete, hostname, timestamp, requestId, status, url`
+- network_request_failed（同上）
+  - 参与字段：`type=network_request_failed, hostname, timestamp, requestId, url, errorText`
+
+使用建议：
+- 去重：将 `event_id` 作为主键（或唯一索引）可直接过滤重复记录。
+- 聚合：同一网络请求的不同阶段（start/complete/failed）会有不同 `event_id`，若要聚合同一请求，请用 `requestId` 关联。
+- 兼容性：`event_id` 为新增字段，旧的分析脚本可以忽略它；当需要确保“没有重复数据”时，可基于此字段简单检查去重情况。
+
+
 **实时监控日志：**
 ```bash
 # 查看实时监控状态

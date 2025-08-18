@@ -6,17 +6,20 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from ..core.connector import ChromeConnector
+from ..utils.event_id import make_event_id
 
 logger = logging.getLogger(__name__)
 
 
 class ConsoleMonitor:
-    """Console log monitor - pure queue mode, no data_callback mixing."""
+    """Console log monitor - per-session filtering with a queue."""
     
-    def __init__(self, connector: ChromeConnector, target_id: str,
+    def __init__(self, connector: ChromeConnector, session_id: str,
                  event_queue: asyncio.Queue, status_callback: Optional[Callable] = None):
         self.connector = connector
-        self.target_id = target_id  # Store targetId instead of sessionId
+        # In flattened mode, CDP events include a top-level sessionId injected by connector
+        # Keep a strict per-session filter to avoid cross-tab duplication
+        self.session_id = session_id
         self.event_queue = event_queue
         self.status_callback = status_callback
         self.hostname = None
@@ -27,7 +30,7 @@ class ConsoleMonitor:
         
     async def start_monitoring(self) -> None:
         """Start Console event listening."""
-        logger.debug(f"ConsoleMonitor.start_monitoring: registering handlers for target {self.target_id}")
+        logger.debug(f"ConsoleMonitor.start_monitoring: registering handlers for session {self.session_id}")
         self.connector.on_event("Runtime.consoleAPICalled", self._on_console_message)
         self.connector.on_event("Runtime.exceptionThrown", self._on_exception_thrown)
         logger.debug(f"ConsoleMonitor handlers registered")
@@ -39,8 +42,9 @@ class ConsoleMonitor:
         
     async def _on_console_message(self, params: dict) -> None:
         """Handle console message - pure queue path: filter→limit→construct→enqueue."""
-        # TODO: Implement proper filtering based on execution context or URL
-        # For now, accept all console messages for this hostname
+        # Strictly filter by session to avoid cross-tab duplication
+        if params.get("sessionId") != self.session_id:
+            return
         
         # Construct lightweight event data
         console_data = {
@@ -51,6 +55,16 @@ class ConsoleMonitor:
             "source": self._extract_source(params),
             "hostname": self.hostname
         }
+        # Add event_id
+        console_data["event_id"] = make_event_id(
+            "console",
+            self.hostname or "",
+            console_data["timestamp"],
+            console_data.get("level", ""),
+            console_data.get("message", ""),
+            (console_data.get("source", {}) or {}).get("url", ""),
+            (console_data.get("source", {}) or {}).get("line", 0)
+        )
         
         # Single exit: enqueue for processing (drop when full)
         try:
@@ -71,8 +85,9 @@ class ConsoleMonitor:
     
     async def _on_exception_thrown(self, params: dict) -> None:
         """Handle JavaScript exception - pure queue path: filter→construct→enqueue."""
-        # TODO: Implement proper filtering based on execution context or URL
-        # For now, accept all exceptions for this hostname
+        # Strictly filter by session to avoid cross-tab duplication
+        if params.get("sessionId") != self.session_id:
+            return
             
         exception = params["exceptionDetails"]
         exception_data = {
@@ -87,6 +102,16 @@ class ConsoleMonitor:
             "stackTrace": self._format_stack_trace(exception.get("stackTrace", {})),
             "hostname": self.hostname
         }
+        # Add event_id
+        exception_data["event_id"] = make_event_id(
+            "exception",
+            self.hostname or "",
+            exception_data["timestamp"],
+            exception_data.get("message", ""),
+            exception_data.get("source", {}).get("url", ""),
+            exception_data.get("source", {}).get("line", 0),
+            exception_data.get("source", {}).get("column", 0)
+        )
         
         # Single exit: enqueue for processing
         try:

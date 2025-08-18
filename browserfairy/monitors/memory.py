@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
 from ..core.connector import ChromeConnector, ChromeConnectionError
+from ..utils.event_id import make_event_id
 
 # Conditional imports for comprehensive mode (avoid circular imports)
 from typing import TYPE_CHECKING
@@ -50,6 +51,7 @@ class MemoryCollector:
         self.console_monitor: Optional['ConsoleMonitor'] = None
         self.network_monitor: Optional['NetworkMonitor'] = None
         self.domstorage_monitor: Optional[Any] = None
+        self.gc_monitor: Optional[Any] = None  # Initialize gc_monitor attribute
         self.correlation_engine: Optional['SimpleCorrelationEngine'] = None
         self.event_consumer_task: Optional[asyncio.Task] = None
         self.consumer_running = False  # Independent lifecycle for event consumer
@@ -178,7 +180,7 @@ class MemoryCollector:
             pass  # Keep null on failure
         
         # 4. Build output (using url/title maintained by TabMonitor, no duplicate fetching)
-        return {
+        record = {
             "type": "memory",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "hostname": self.hostname,
@@ -205,6 +207,16 @@ class MemoryCollector:
                 "scriptDuration": extracted["ScriptDuration"]
             }
         }
+        # Add lightweight event_id for deduplication
+        record["event_id"] = make_event_id(
+            "memory",
+            record.get("hostname", ""),
+            record.get("timestamp", ""),
+            record.get("targetId", ""),
+            record.get("sessionId", ""),
+            record.get("url", "")
+        )
+        return record
     
     async def start_collection(self, interval: float = 5.0) -> None:
         """Start periodic memory collection."""
@@ -235,6 +247,13 @@ class MemoryCollector:
                     snapshot = await self.collect_memory_snapshot()
                     self.last_activity_time = datetime.now().timestamp()
                     
+                    # Check GC metrics if in comprehensive mode
+                    if self.enable_comprehensive and self.gc_monitor:
+                        try:
+                            await self.gc_monitor.check_gc_metrics()
+                        except Exception as e:
+                            logger.debug(f"GC metrics check failed: {e}")
+                    
                     # Fire data callback if set
                     if self.data_callback:
                         try:
@@ -264,6 +283,9 @@ class MemoryCollector:
         
         if self.domstorage_monitor:
             await self.domstorage_monitor.stop_monitoring()
+        
+        if self.gc_monitor:
+            await self.gc_monitor.stop_monitoring()
         
         # Cancel and wait for event consumer task completion
         if self.event_consumer_task:
@@ -305,6 +327,7 @@ class MemoryCollector:
         from .console import ConsoleMonitor
         from .network import NetworkMonitor
         from .domstorage import DOMStorageMonitor
+        from .gc import GCMonitor
         from ..analysis.correlation import SimpleCorrelationEngine
         
         self.console_monitor = ConsoleMonitor(
@@ -325,17 +348,25 @@ class MemoryCollector:
             self.event_queue,
             self.status_callback
         )
+        self.gc_monitor = GCMonitor(
+            self.connector,
+            self.session_id,
+            self.event_queue,
+            self.status_callback
+        )
         self.correlation_engine = SimpleCorrelationEngine(self.status_callback)
         
         # Set hostname for data grouping
         self.console_monitor.set_hostname(self.hostname)
         self.network_monitor.set_hostname(self.hostname)
         self.domstorage_monitor.set_hostname(self.hostname)
+        self.gc_monitor.set_hostname(self.hostname)
         
         # Start monitoring (use queue mode, not data_callback)
         await self.console_monitor.start_monitoring()
         await self.network_monitor.start_monitoring()
         await self.domstorage_monitor.start_monitoring()
+        await self.gc_monitor.start_monitoring()
         
         # Start event consumer with independent lifecycle
         self.consumer_running = True

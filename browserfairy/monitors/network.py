@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from ..core.connector import ChromeConnector
+from ..utils.event_id import make_event_id
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,18 @@ class NetworkMonitor:
         
         # Cache request data (existing logic unchanged)
         self.pending_requests[request_id] = request_data
+        # Add event_id
+        try:
+            request_data["event_id"] = make_event_id(
+                "network_request_start",
+                self.hostname or "",
+                request_data.get("timestamp", ""),
+                request_id,
+                request_data.get("method", ""),
+                request_data.get("url", "")
+            )
+        except Exception:
+            pass
         
         # Single exit: enqueue for processing
         try:
@@ -208,6 +221,18 @@ class NetworkMonitor:
         self.stack_candidates.pop(request_id, None)
         
         # Single exit: enqueue for processing (existing logic unchanged)
+        # Add event_id
+        try:
+            request_data["event_id"] = make_event_id(
+                "network_request_complete",
+                self.hostname or "",
+                request_data.get("timestamp", ""),
+                request_id,
+                request_data.get("status", 0),
+                request_data.get("url", "")
+            )
+        except Exception:
+            pass
         try:
             self.event_queue.put_nowait(("network_request_complete", request_data))
         except asyncio.QueueFull:
@@ -231,6 +256,18 @@ class NetworkMonitor:
             "canceled": params.get("canceled", False),
             "hostname": self.hostname
         })
+        # Add event_id
+        try:
+            request_data["event_id"] = make_event_id(
+                "network_request_failed",
+                self.hostname or "",
+                request_data.get("timestamp", ""),
+                request_id,
+                request_data.get("url", ""),
+                request_data.get("errorText", "")
+            )
+        except Exception:
+            pass
         
         # Single exit: enqueue for processing
         try:
