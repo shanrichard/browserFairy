@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
 
 from ..core.connector import ChromeConnector
 
@@ -22,6 +23,22 @@ class NetworkMonitor:
         self.pending_requests: dict = {}  # requestId -> request metadata
         self.hostname = None
         
+        # Stack enhancement attributes (new)
+        self.debugger_enabled = False
+        self.stack_candidates = {}  # LRU cache: requestId -> {snapshot, cached_at, url, resource_type}
+        self.max_candidates = 300  # LRU limit
+        self.api_count = {}  # (origin, path) -> count for high frequency detection
+        self.resource_count = {}  # (origin, path) -> count for repeated resource detection
+        
+        # Debug statistics (new)
+        self._recent_triggers = []  # Recent trigger records for debugging
+        self._debug_stats = {
+            "total_candidates_cached": 0,
+            "total_stacks_collected": 0,
+            "debugger_enable_attempts": 0,
+            "debugger_enable_failures": 0
+        }
+        
     def set_hostname(self, hostname: str):
         """Set hostname for data grouping."""
         self.hostname = hostname
@@ -32,6 +49,9 @@ class NetworkMonitor:
         self.connector.on_event("Network.responseReceived", self._on_response_received)
         self.connector.on_event("Network.loadingFinished", self._on_request_finished)
         self.connector.on_event("Network.loadingFailed", self._on_request_failed)
+        
+        # Enable Debugger for enhanced stack collection
+        await self._enable_debugger_globally()
     
     async def stop_monitoring(self) -> None:
         """Stop Network event listening with paired off_event."""
@@ -81,7 +101,21 @@ class NetworkMonitor:
                 except Exception as e:
                     logger.warning(f"Error in large_request status callback: {e}")
         
-        # Cache request data
+        # NEW: Judge and cache candidate initiator (XHR/Fetch always cached; Script only when JS stack exists)
+        candidate_reason = self._should_cache_initiator(params)
+        if candidate_reason:
+            self._cache_trimmed_initiator(
+                request_id=request_id,
+                raw_initiator=params["initiator"],
+                url=params.get("request", {}).get("url", ""),
+                resource_type=params.get("type", ""),
+                initial_reason=candidate_reason  # Save initial trigger reason
+            )
+            
+        # NEW: Update counts (for subsequent trigger determination)
+        self._update_request_counts(params)
+        
+        # Cache request data (existing logic unchanged)
         self.pending_requests[request_id] = request_data
         
         # Single exit: enqueue for processing
@@ -146,7 +180,34 @@ class NetworkMonitor:
             "encodedDataLength": response_size
         })
         
-        # Single exit: enqueue for processing
+        # NEW: Final confirmation and attach detailedStack
+        candidate = self.stack_candidates.get(request_id)
+        final_reason = self._confirm_detailed_stack_needed(url=request_data.get("url", ""), params=params, candidate=candidate)
+        if final_reason:
+            if candidate:
+                detailed_stack = self._format_detailed_stack(candidate["snapshot"])
+                request_data["detailedStack"] = {
+                    "enabled": True,
+                    "reason": final_reason,
+                    "collectionTime": datetime.now(timezone.utc).isoformat(),
+                    **detailed_stack
+                }
+                # Record successful trigger event
+                self._record_trigger_event(final_reason, request_id, request_data.get("url", ""), True)
+            else:
+                # No candidate: also output reason, avoid gaps
+                request_data["detailedStack"] = {
+                    "enabled": False,
+                    "reason": final_reason,
+                    "collectionTime": datetime.now(timezone.utc).isoformat()
+                }
+                # Record failed trigger event (has reason but no candidate)
+                self._record_trigger_event(final_reason, request_id, request_data.get("url", ""), False)
+        
+        # Clean up candidate cache
+        self.stack_candidates.pop(request_id, None)
+        
+        # Single exit: enqueue for processing (existing logic unchanged)
         try:
             self.event_queue.put_nowait(("network_request_complete", request_data))
         except asyncio.QueueFull:
@@ -213,3 +274,199 @@ class NetworkMonitor:
             }
         
         return result
+    
+    # Stack Enhancement Methods (new)
+    
+    async def _enable_debugger_globally(self):
+        """Enable Debugger domain globally for detailed stack collection."""
+        self._debug_stats["debugger_enable_attempts"] += 1
+        try:
+            await self.connector.call("Debugger.enable", session_id=self.session_id)
+            await self.connector.call("Debugger.setAsyncCallStackDepth", 
+                                    {"maxDepth": 15}, session_id=self.session_id)
+            self.debugger_enabled = True
+            logger.info(f"Debugger enabled for detailed stack collection (session: {self.session_id})")
+        except Exception as e:
+            self._debug_stats["debugger_enable_failures"] += 1
+            logger.debug(f"Failed to enable debugger for session {self.session_id}: {e}")
+            # Graceful degradation, does not affect basic network monitoring
+    
+    def _should_cache_initiator(self, params: dict) -> Optional[str]:
+        """Determine if initiator should be cached (requestWillBeSent phase)."""
+        resource_type = params.get("type", "")
+        
+        # Primary target: XHR/Fetch (data requests)
+        if resource_type in ["XHR", "Fetch"]:
+            request = params.get("request", {})
+            # Large upload detection
+            if len(request.get("postData", "")) > 102400:  # 100KB
+                return "large_upload"
+            # Cache all XHR/Fetch as candidates (main value scenario)
+            return "xhr_fetch_candidate"
+        
+        # Supplementary target: Script with JS stack (dynamic loading scenarios)
+        elif resource_type == "Script" and params.get("initiator", {}).get("stack"):
+            return "script_with_stack"
+        
+        return None  # Other types not cached
+    
+    def _confirm_detailed_stack_needed(self, url: str, params: dict, candidate: Optional[dict] = None) -> Optional[str]:
+        """Final confirmation if detailed stack is needed (loadingFinished phase)."""
+        # Priority 1: Large download confirmation (higher priority than upload)
+        encoded_length = params.get("encodedDataLength", 0)
+        if encoded_length > 102400:  # 100KB
+            return "large_download"
+        
+        # Priority 2: Check initial trigger reason from candidate (for large_upload only cases)
+        if candidate and candidate.get("initial_reason") == "large_upload":
+            return "large_upload"
+        
+        # Priority 3: Count-based trigger confirmation
+        origin, path = self._parse_origin_path(url)
+        
+        # High frequency API (>50 times)
+        api_count = self.api_count.get((origin, path), 0)
+        if api_count > 50:
+            return f"high_frequency_api_{api_count}"
+            
+        # Repeated resource (>5 times and >10KB single)
+        resource_count = self.resource_count.get((origin, path), 0)
+        if resource_count > 5 and encoded_length > 10240:  # 10KB
+            return f"repeated_resource_{resource_count}"
+        
+        return None
+    
+    def _parse_origin_path(self, url: str) -> tuple:
+        """Parse URL to (origin, path), removing query interference."""
+        try:
+            parsed = urlparse(url)
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            path = parsed.path or "/"
+            return (origin, path)
+        except:
+            return (url, "/")  # Fallback
+    
+    def _cache_trimmed_initiator(self, request_id: str, raw_initiator: dict, url: str, resource_type: str, initial_reason: str):
+        """Cache trimmed initiator snapshot."""
+        # LRU eviction strategy
+        if len(self.stack_candidates) >= self.max_candidates:
+            # Evict oldest based on cached_at, avoiding dependency on pending_requests
+            oldest_id = min(self.stack_candidates, key=lambda k: self.stack_candidates[k]["cached_at"])
+            self.stack_candidates.pop(oldest_id, None)
+        
+        # Immediate trimming: frames≤30, asyncFrames≤15, string truncation
+        trimmed = self._trim_initiator_snapshot(raw_initiator)
+        self.stack_candidates[request_id] = {
+            "snapshot": trimmed,
+            "cached_at": datetime.now(timezone.utc).timestamp(),
+            "url": url,
+            "resource_type": resource_type,
+            "initial_reason": initial_reason  # Save the initial trigger reason
+        }
+        
+        # Update debug statistics
+        self._debug_stats["total_candidates_cached"] += 1
+    
+    def _trim_initiator_snapshot(self, raw_initiator: dict) -> dict:
+        """Trim initiator snapshot to control memory (adjusted precision)."""
+        if not raw_initiator.get("stack"):
+            return {"type": raw_initiator.get("type", "unknown")}
+            
+        trimmed = {"type": raw_initiator.get("type", "unknown")}
+        stack = raw_initiator["stack"]
+        
+        # Adjustment: Increase main stack frames limit to 30, retain more debug info
+        if stack.get("callFrames"):
+            def trim_frames(frames, limit):
+                out = []
+                for frame in frames[:limit]:
+                    out.append({
+                        "functionName": str(frame.get("functionName", ""))[:150],  # Increase to 150 chars
+                        "url": str(frame.get("url", ""))[:300],  # Increase to 300 chars
+                        "lineNumber": int(frame.get("lineNumber", 0)),
+                        "columnNumber": int(frame.get("columnNumber", 0)),
+                        "scriptId": str(frame.get("scriptId", ""))[:50]
+                    })
+                return out
+
+            trimmed_stack = {"callFrames": trim_frames(stack.get("callFrames", []), 30)}  # Increase to 30 frames
+
+            # Adjustment: Async parent stack chain increase to 15 layers, retain more async context
+            parent_src = stack
+            parent_dst = trimmed_stack
+            depth = 0
+            while parent_src.get("parent") and depth < 15:  # Increase to 15 layers
+                parent_src = parent_src["parent"]
+                node = {"callFrames": trim_frames(parent_src.get("callFrames", []), 30)}  # Each layer also 30 frames
+                parent_dst["parent"] = node
+                parent_dst = node
+                depth += 1
+
+            trimmed["stack"] = trimmed_stack
+        
+        return trimmed
+    
+    def _format_detailed_stack(self, trimmed_initiator: dict) -> dict:
+        """Parse cached call stack snapshot (adjusted truncation judgment)."""
+        frames = []
+        async_frames = []
+        
+        stack = trimmed_initiator.get("stack", {})
+        
+        # Parse main call stack
+        if stack.get("callFrames"):
+            frames = stack["callFrames"]  # Already trimmed during caching
+            
+        # Parse async call stack (parent attributes)
+        current_stack = stack
+        while current_stack.get("parent"):
+            current_stack = current_stack["parent"]
+            if current_stack.get("callFrames"):
+                async_frames.extend(current_stack["callFrames"])
+        
+        return {
+            "frames": frames,
+            "asyncFrames": async_frames[:15],  # Adjust secondary protection limit
+            "truncated": len(frames) >= 30 or len(async_frames) >= 15  # Adjust truncation judgment
+        }
+    
+    def _update_request_counts(self, params: dict):
+        """Update API and resource counts."""
+        url = params.get("request", {}).get("url", "")
+        origin, path = self._parse_origin_path(url)
+        
+        resource_type = params.get("type", "")
+        if resource_type in ["XHR", "Fetch"]:
+            self.api_count[(origin, path)] = self.api_count.get((origin, path), 0) + 1
+        elif resource_type == "Script" and any(ext in path for ext in [".js", ".css", ".json"]):
+            self.resource_count[(origin, path)] = self.resource_count.get((origin, path), 0) + 1
+    
+    def _record_trigger_event(self, reason: str, request_id: str, url: str, enabled: bool):
+        """Record trigger event for debugging."""
+        trigger_record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "reason": reason,
+            "requestId": request_id,
+            "url": url[:100],
+            "enabled": enabled
+        }
+        self._recent_triggers.append(trigger_record)
+        
+        # Keep recent 50 records
+        if len(self._recent_triggers) > 50:
+            self._recent_triggers.pop(0)
+            
+        # Update lifecycle statistics
+        if enabled:
+            self._debug_stats["total_stacks_collected"] += 1
+    
+    def get_debug_stats(self) -> dict:
+        """Get debugging statistics."""
+        return {
+            "candidates_cached": len(self.stack_candidates),
+            "api_count_entries": len(self.api_count),
+            "resource_count_entries": len(self.resource_count),
+            "debugger_enabled": self.debugger_enabled,
+            "recent_triggers": self._recent_triggers[-10:],  # Recent 10 trigger records
+            "lifetime_stats": self._debug_stats.copy()
+        }
