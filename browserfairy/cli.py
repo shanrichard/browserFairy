@@ -11,7 +11,7 @@ from typing import Optional, Callable
 
 from .core.connector import ChromeConnector, ChromeConnectionError
 from .utils.paths import ensure_data_directory
-from .monitors.tabs import TabMonitor
+from .monitors.tabs import TabMonitor, extract_hostname
 from .monitors.memory import MemoryMonitor, MemoryCollector
 from .data.manager import DataManager
 from .data.site_manager import SiteDataManager
@@ -921,6 +921,136 @@ async def analyze_sites(hostname: Optional[str] = None) -> int:
         return 1
 
 
+async def snapshot_storage_once(host: str, port: int, filter_hostname: Optional[str] = None,
+                                max_value_len: int = 2048) -> int:
+    """One-time DOMStorage snapshot for open page targets.
+
+    - Connects to Chrome, lists page targets, optionally filters by hostname
+    - For each selected page: attach, evaluate storage snapshot in page context,
+      and write a single domstorage_snapshot record into storage.jsonl
+    - No background tasks; minimal, safe, and side-effect free
+    """
+    connector = ChromeConnector(host=host, port=port)
+    try:
+        print(f"Connecting to Chrome at {host}:{port}...")
+        await connector.connect()
+        print("✓ Connected to Chrome")
+
+        targets_response = await connector.get_targets()
+        page_targets = connector.filter_page_targets(targets_response)
+
+        # Select targets by optional hostname filter
+        selected = []
+        for t in page_targets:
+            url = t.get("url", "")
+            hn = extract_hostname(url) or ""
+            if filter_hostname:
+                if hn == (filter_hostname or "").lower():
+                    selected.append((t.get("targetId"), hn, url))
+            else:
+                if hn:
+                    selected.append((t.get("targetId"), hn, url))
+
+        if not selected:
+            print("No matching page targets found for snapshot.")
+            return 0
+
+        # Prepare data manager for writing
+        data_manager = DataManager(connector)
+        await data_manager.start()
+        print(f"✓ Snapshot session: {data_manager.session_dir.name}")
+
+        # JS snippet to capture estimate + local/session entries with truncation
+        js = f"""
+        (async () => {{
+          try {{
+            const MAX = {max_value_len};
+            const trunc = v => {{
+              try {{ v = String(v); }} catch (e) {{ v = '' + v; }}
+              return v.length > MAX ? v.slice(0, MAX) + '...[truncated]' : v;
+            }};
+            const getEntries = s => {{
+              try {{
+                const out = [];
+                const len = s.length || 0;
+                for (let i = 0; i < len; i++) {{
+                  const k = s.key(i);
+                  out.push({{ key: k, value: trunc(s.getItem(k)) }});
+                }}
+                return out;
+              }} catch (e) {{ return []; }}
+            }};
+            const est = (navigator.storage && navigator.storage.estimate) ? await navigator.storage.estimate() : {{}};
+            return {{
+              origin: (location && location.origin) || '',
+              estimate: {{ quota: est.quota || 0, usage: est.usage || 0 }},
+              local: getEntries(window.localStorage || {{}}),
+              session: getEntries(window.sessionStorage || {{}})
+            }};
+          }} catch (e) {{ return {{ error: String(e) }}; }}
+        }})()
+        """.strip()
+
+        # Snapshot each target
+        for target_id, hostname, url in selected:
+            try:
+                # Attach to target
+                resp = await connector.call("Target.attachToTarget", {"targetId": target_id, "flatten": True}, timeout=15.0)
+                session_id = resp.get("sessionId")
+                if not session_id:
+                    print(f"Skip: failed to attach {target_id[:8]}")
+                    continue
+
+                # Evaluate in page context
+                ev = await connector.call(
+                    "Runtime.evaluate",
+                    {"expression": js, "awaitPromise": True, "returnByValue": True},
+                    session_id=session_id,
+                    timeout=15.0
+                )
+                value = (ev or {}).get("result", {}).get("value", {}) or {}
+
+                # Build snapshot record
+                record = {
+                    "type": "domstorage_snapshot",
+                    "timestamp": datetime.now().isoformat(),
+                    "hostname": hostname,
+                    "targetId": target_id,
+                    "origin": value.get("origin", ""),
+                    "data": {
+                        "estimate": value.get("estimate", {}),
+                        "local": value.get("local", []),
+                        "session": value.get("session", [])
+                    }
+                }
+
+                await data_manager.write_storage_event(hostname, record)
+                print(f"✓ Snapshot written for {hostname} ({target_id[:8]})")
+
+            except Exception as e:
+                print(f"Snapshot failed for target {target_id[:8]}: {e}")
+            finally:
+                # Detach best-effort
+                try:
+                    if 'session_id' in locals() and session_id:
+                        await connector.call("Target.detachFromTarget", {"sessionId": session_id})
+                except Exception:
+                    pass
+
+        await data_manager.stop()
+        return 0
+
+    except ChromeConnectionError as e:
+        print(f"Connection failed: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
+        return 1
+    finally:
+        if connector.websocket:
+            await connector.disconnect()
+
+
 def get_default_host() -> str:
     """Get default host from environment or use 127.0.0.1."""
     return os.environ.get("CHROME_DEBUG_HOST", "127.0.0.1")
@@ -1005,6 +1135,24 @@ async def main() -> None:
         type=str,
         help="Custom log file path for daemon mode"
     )
+
+    # One-shot DOMStorage snapshot (manual, safe)
+    parser.add_argument(
+        "--snapshot-storage-once",
+        action="store_true",
+        help="Take a one-time DOMStorage snapshot (local/session + estimate) for open pages"
+    )
+    parser.add_argument(
+        "--snapshot-hostname",
+        type=str,
+        help="Optional hostname filter for snapshot (only pages matching this hostname)"
+    )
+    parser.add_argument(
+        "--snapshot-maxlen",
+        type=int,
+        default=2048,
+        help="Max value length to capture in snapshot (default: 2048)"
+    )
     
     parser.add_argument(
         "--duration",
@@ -1086,6 +1234,14 @@ async def main() -> None:
         else:
             # 前台模式
             exit_code = await start_monitoring_service(args.log_file, args.duration)
+        sys.exit(exit_code)
+    elif args.snapshot_storage_once:
+        exit_code = await snapshot_storage_once(
+            host=args.host,
+            port=args.port,
+            filter_hostname=args.snapshot_hostname,
+            max_value_len=args.snapshot_maxlen
+        )
         sys.exit(exit_code)
     elif args.analyze_sites is not None:
         # --analyze-sites was provided

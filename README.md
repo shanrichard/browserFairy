@@ -151,6 +151,14 @@ browserfairy --analyze-sites example.com        # 特定网站详情
 # 实时监控（开发调试用）
 browserfairy --monitor-tabs                     # 标签页变化
 browserfairy --monitor-memory                   # 内存使用情况
+
+# 手动存储快照（仅在需要时使用）
+browserfairy --snapshot-storage-once            # 对所有已打开页面做一次快照
+browserfairy --snapshot-storage-once \
+  --snapshot-hostname www.youtube.com          # 仅对特定站点
+browserfairy --snapshot-storage-once \
+  --snapshot-hostname www.youtube.com \
+  --snapshot-maxlen 8192                       # 调整单值截断长度（默认 2048）
 ```
 
 ### 5. 查看结果
@@ -165,6 +173,7 @@ browserfairy --monitor-memory                   # 内存使用情况
 │   │   ├── memory.jsonl          # 内存监控时序数据
 │   │   ├── console.jsonl         # Console日志和异常
 │   │   ├── network.jsonl         # 网络请求生命周期
+│   │   ├── storage.jsonl         # 存储数据：配额/DOMStorage事件/手动快照
 │   │   └── correlations.jsonl    # 跨指标关联分析
 │   └── trading.site.com/
 │       └── ...                   # 其他监控网站
@@ -212,7 +221,7 @@ trading.site.com:
 | 🧠 **内存监控** | JS Heap, DOM节点, 事件监听器 | 内存泄漏、DOM累积 |
 | 🌐 **网络分析** | 请求大小、响应时间、错误率 | 性能瓶颈、资源浪费 |
 | ⚠️ **Console监控** | JS错误、警告、异常 | 代码质量、运行异常 |
-| 💾 **存储跟踪** | IndexedDB配额使用 | 存储空间管理 |
+| 💾 **存储跟踪** | 配额监控（含页面兜底）/DOMStorage事件/手动快照 | 存储空间与键值变更追踪 |
 | 🔗 **关联分析** | 跨指标时间窗口关联 | 性能模式识别 |
 | 📈 **趋势分析** | 历史数据对比、P95统计 | 性能退化预警 |
 
@@ -236,7 +245,14 @@ trading.site.com:
 --test-connection              # 连接测试
 --chrome-info                  # Chrome版本信息
 --list-tabs                    # 当前标签页列表
+--snapshot-storage-once        # 手动：对已打开页面做一次 DOMStorage 快照
 ```
+
+### 💾 存储监控说明（新增）
+- 配额监控：优先使用浏览器级 API；若遇到环境限制会自动回退到页面级 `navigator.storage.estimate()`，尽快写入 `storage.jsonl`。
+- DOMStorage 事件：已接入 `localStorage/sessionStorage` 的键变更事件（新增/更新/移除/清空），记录在 `storage.jsonl`。
+- 手动快照：通过 `--snapshot-storage-once` 生成一条 `domstorage_snapshot` 记录（包含配额估算 + 全量键值，值默认截断 2KB）。
+- 注意：快照可能包含敏感值，建议仅用于本地诊断，必要时配合 `--snapshot-maxlen` 限制写入长度。
 
 ### 🏗 技术架构特点
 
