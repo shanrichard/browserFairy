@@ -152,13 +152,12 @@ browserfairy --analyze-sites example.com        # 特定网站详情
 browserfairy --monitor-tabs                     # 标签页变化
 browserfairy --monitor-memory                   # 内存使用情况
 
-# 手动存储快照（仅在需要时使用）
-browserfairy --snapshot-storage-once            # 对所有已打开页面做一次快照
+# DOMStorage快照 - 调试网站存储问题
+browserfairy --snapshot-storage-once            # 所有打开页面的存储快照
 browserfairy --snapshot-storage-once \
-  --snapshot-hostname www.youtube.com          # 仅对特定站点
+  --snapshot-hostname example.com              # 仅特定网站
 browserfairy --snapshot-storage-once \
-  --snapshot-hostname www.youtube.com \
-  --snapshot-maxlen 8192                       # 调整单值截断长度（默认 2048）
+  --snapshot-maxlen 512                        # 限制值长度（默认2048字符）
 ```
 
 ### 5. 查看结果
@@ -247,14 +246,62 @@ trading.site.com:
 --test-connection              # 连接测试
 --chrome-info                  # Chrome版本信息
 --list-tabs                    # 当前标签页列表
---snapshot-storage-once        # 手动：对已打开页面做一次 DOMStorage 快照
+--snapshot-storage-once        # DOMStorage快照（调试存储问题）
 ```
 
-### 💾 存储监控说明（新增）
-- 配额监控：优先使用浏览器级 API；若遇到环境限制会自动回退到页面级 `navigator.storage.estimate()`，尽快写入 `storage.jsonl`。
-- DOMStorage 事件：已接入 `localStorage/sessionStorage` 的键变更事件（新增/更新/移除/清空），记录在 `storage.jsonl`。
-- 手动快照：通过 `--snapshot-storage-once` 生成一条 `domstorage_snapshot` 记录（包含配额估算 + 全量键值，值默认截断 2KB）。
-- 注意：快照可能包含敏感值，建议仅用于本地诊断，必要时配合 `--snapshot-maxlen` 限制写入长度。
+### 💾 存储监控说明
+
+#### 自动存储监控（综合监控模式下）
+- **配额监控**：优先使用浏览器级 API；若遇到环境限制会自动回退到页面级 `navigator.storage.estimate()`，尽快写入 `storage.jsonl`
+- **DOMStorage 事件**：自动监听 `localStorage/sessionStorage` 的键变更事件（新增/更新/移除/清空），记录在 `storage.jsonl`
+
+#### DOMStorage快照工具（`--snapshot-storage-once`）
+**功能说明**：对当前打开的网页进行localStorage和sessionStorage的完整数据快照，用于调试存储相关问题。
+
+**典型使用场景**：
+- 🔍 **诊断存储异常**：网站功能异常时，快速查看localStorage/sessionStorage中的数据状态
+- 📊 **分析缓存数据**：了解网站在浏览器中缓存了哪些数据，数据量有多大
+- 🐛 **调试状态问题**：检查用户状态、会话信息、临时数据是否正确存储
+- 🔄 **对比存储变化**：在操作前后分别快照，对比存储数据的变化
+
+**数据内容**：
+- **存储配额**：通过 `navigator.storage.estimate()` 获取的quota（总配额）和usage（已使用量）
+- **localStorage数据**：所有键值对，包括键名和对应的值
+- **sessionStorage数据**：当前会话的所有键值对
+- **安全截断**：超长值自动截断（默认2048字符），避免敏感数据泄露
+
+**输出格式**（保存到 `storage.jsonl`）：
+```json
+{
+  "type": "domstorage_snapshot",
+  "timestamp": "2025-08-16T14:30:25.123Z",
+  "hostname": "example.com",
+  "targetId": "1234ABCD",
+  "origin": "https://example.com",
+  "data": {
+    "estimate": {
+      "quota": 137438953472,
+      "usage": 524288
+    },
+    "local": [
+      {"key": "user_preferences", "value": "{\"theme\":\"dark\",\"lang\":\"zh\"}"},
+      {"key": "auth_token", "value": "eyJhbGciOiJS...[truncated]"}
+    ],
+    "session": [
+      {"key": "temp_cart", "value": "[{\"id\":1,\"qty\":2}]"}
+    ]
+  }
+}
+```
+
+**参数说明**：
+- `--snapshot-hostname`：仅对指定hostname的页面进行快照（如 example.com）
+- `--snapshot-maxlen`：单个值的最大长度（默认2048），超出部分显示`[truncated]`
+
+⚠️ **安全提醒**：快照可能包含敏感信息（如token、密码、个人数据），建议：
+- 仅用于本地调试，不要分享给他人
+- 使用 `--snapshot-maxlen` 限制值长度，减少敏感信息暴露
+- 快照完成后及时清理不需要的数据文件
 
 ### 🔍 网络调用栈关联（新增）
 **智能触发机制**：仅对性能问题相关的网络请求收集完整的JavaScript调用栈，帮助精确定位代码位置。
