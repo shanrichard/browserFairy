@@ -17,7 +17,7 @@ class SimpleCorrelationEngine:
     def __init__(self, status_callback: Optional[Callable] = None):
         self.status_callback = status_callback
         self.recent_events = deque(maxlen=20)  # Limit buffer size
-        self.correlation_window = 3.0  # ±3 seconds correlation window
+        self.correlation_window = 15.0  # ±15 seconds correlation window
         
     def add_event(self, event_data: dict) -> Optional[dict]:
         """Add event and check time window correlations."""
