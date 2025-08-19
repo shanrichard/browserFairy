@@ -80,13 +80,76 @@ BrowserFairy 生成的监控数据采用 **JSONL格式**（JSON Lines），每�
 }
 ```
 
+#### 事件监听器详细分析
+当监听器数量异常增长（>20个）时，会触发详细分析，在同一条记录中增加可选字段：
+
+```json
+{
+  "type": "memory",
+  "timestamp": "2025-08-16T14:30:25.123Z",
+  "memory": {
+    "listeners": 342  // 基础计数保持不变
+  },
+  "eventListenersAnalysis": {  // 可选扩展字段
+    "summary": {
+      "total": 342,
+      "byTarget": {
+        "document": 23,   // document对象上的监听器
+        "window": 15,     // window对象上的监听器
+        "elements": 304   // DOM元素上的监听器（估算）
+      },
+      "byType": {
+        "click": 156,
+        "scroll": 89,
+        "resize": 45,
+        "keydown": 32,
+        "change": 20
+      }
+    },
+    "growthDelta": 25,         // 相比上次检测的增长数
+    "analysisTriggered": true, // 是否触发了详细分析
+    "detailedSources": [       // 仅在triggerd时出现，定位具体泄漏源
+      {
+        "sourceFile": "https://example.com/js/ProductList.js",
+        "lineNumber": 156,
+        "functionName": "handleProductClick",
+        "elementCount": 15,       // 该函数绑定到多少个元素
+        "eventTypes": ["click"],
+        "suspicion": "high"       // high/medium，根据elementCount判断
+      },
+      {
+        "sourceFile": "https://example.com/js/charts.js",
+        "lineNumber": 89,
+        "functionName": "onDataUpdate", 
+        "elementCount": 8,
+        "eventTypes": ["change", "input"],
+        "suspicion": "medium"
+      }
+    ]
+  }
+}
+```
+
+**监听器分析触发条件**：
+- **轻量统计**：每次内存采集都会执行基础统计（byTarget, byType）
+- **详细分析**：只在监听器增长>20个时异步执行，避免影响性能
+- **来源定位**：通过DOMDebugger.getEventListeners获取函数名和代码位置
+- **智能采样**：仅分析常见元素类型（按钮、表单、弹窗等），避免全页面扫描
+
+**实际价值**：
+- 从"监听器342个"提升到"ProductList.js:156的handleClick函数绑定到15个元素"
+- 精确定位事件监听器泄漏的具体代码位置
+- 发现重复绑定和未正确清理的监听器
+
 #### 分析要点
 - **内存泄漏检测**：JS堆持续增长，DOM节点数不断增加
+- **监听器泄漏定位**：通过detailedSources找到具体的函数和文件位置
 - **性能退化**：layoutDuration 和 scriptDuration 随时间增长
 - **异常阈值**：
   - JS堆 > 500MB：严重内存问题
   - DOM节点 > 10000：DOM累积问题
   - 事件监听器 > 1000：可能存在未清理的监听器
+  - elementCount > 10：高度可疑的监听器泄漏源
 
 ### 2. 网络请求数据 (network.jsonl)
 
@@ -597,7 +660,61 @@ with open('example.com/network.jsonl', 'r') as f:
                 print(f"  - {frame['functionName']} ({frame['url']}:{frame['lineNumber']})")
 ```
 
-### 示例3：错误模式分析
+### 示例3：事件监听器泄漏诊断
+
+```python
+# 分析事件监听器泄漏问题
+import json
+
+def analyze_listener_leaks(memory_file):
+    """分析事件监听器泄漏源"""
+    
+    with open(memory_file, 'r') as f:
+        for line in f:
+            data = json.loads(line)
+            
+            # 查找包含详细分析的记录
+            if 'eventListenersAnalysis' in data:
+                analysis = data['eventListenersAnalysis']
+                
+                print(f"\n时间: {data['timestamp']}")
+                print(f"监听器总数: {analysis['summary']['total']}")
+                print(f"增长数量: {analysis['growthDelta']}")
+                
+                # 显示分布统计
+                by_target = analysis['summary']['byTarget']
+                print(f"分布: document({by_target['document']}) + window({by_target['window']}) + elements({by_target['elements']})")
+                
+                # 显示详细泄漏源（如果触发了详细分析）
+                if analysis.get('analysisTriggered') and 'detailedSources' in analysis:
+                    print("🔥 发现可疑监听器泄漏源:")
+                    for source in analysis['detailedSources']:
+                        suspicion = "🚨" if source['suspicion'] == 'high' else "⚠️"
+                        print(f"  {suspicion} {source['functionName']}")
+                        print(f"     文件: {source['sourceFile']}:{source['lineNumber']}")
+                        print(f"     绑定元素: {source['elementCount']} 个")
+                        print(f"     事件类型: {', '.join(source['eventTypes'])}")
+
+# 使用示例
+analyze_listener_leaks('example.com/memory.jsonl')
+
+# 输出示例:
+# 时间: 2025-08-16T14:30:25.123Z
+# 监听器总数: 342
+# 增长数量: 25
+# 分布: document(23) + window(15) + elements(304)
+# 🔥 发现可疑监听器泄漏源:
+#   🚨 handleProductClick
+#      文件: https://example.com/js/ProductList.js:156
+#      绑定元素: 15 个
+#      事件类型: click
+#   ⚠️ onDataUpdate
+#      文件: https://example.com/js/charts.js:89
+#      绑定元素: 8 个
+#      事件类型: change, input
+```
+
+### 示例4：错误模式分析
 
 ```python
 # 统计最频繁的错误
@@ -681,6 +798,9 @@ def analyze_session(session_dir):
 
 def analyze_memory(file_path):
     """分析内存数据"""
+    listener_analyses = 0
+    high_suspicion_sources = 0
+    
     with open(file_path, 'r') as f:
         lines = f.readlines()
         if lines:
@@ -690,7 +810,19 @@ def analyze_memory(file_path):
             initial_heap = first['memory']['jsHeap']['used'] / 1024 / 1024
             final_heap = last['memory']['jsHeap']['used'] / 1024 / 1024
             
+            # 分析监听器详细分析
+            for line in lines:
+                data = json.loads(line)
+                if 'eventListenersAnalysis' in data:
+                    listener_analyses += 1
+                    if 'detailedSources' in data['eventListenersAnalysis']:
+                        for source in data['eventListenersAnalysis']['detailedSources']:
+                            if source.get('suspicion') == 'high':
+                                high_suspicion_sources += 1
+            
             print(f"  内存: {initial_heap:.1f}MB → {final_heap:.1f}MB (增长{final_heap-initial_heap:.1f}MB)")
+            if listener_analyses > 0:
+                print(f"  监听器分析: {listener_analyses}次, {high_suspicion_sources}个高可疑源")
 
 def analyze_network(file_path):
     """分析网络数据"""
