@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 import random
+import re
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -62,6 +64,11 @@ class MemoryCollector:
         self._last_listener_count = 0
         self._script_url_cache = {}  # scriptId -> url mapping
         self._detailed_analysis_task: Optional[asyncio.Task] = None  # Async analysis task tracking
+        
+        # Long task monitoring state (for comprehensive mode)
+        self.longtask_observer_injected = False
+        self.longtask_callback_registered = False
+        self._longtask_timestamps = []  # 频率控制时间戳
         
     async def attach(self) -> None:
         """Establish Target-level session with retries and sane timeouts."""
@@ -629,6 +636,25 @@ class MemoryCollector:
         if self.gc_monitor:
             await self.gc_monitor.stop_monitoring()
         
+        # Clean up long task monitoring
+        if self.longtask_callback_registered:
+            try:
+                self.connector.off_event("Runtime.bindingCalled", self._on_longtask_data)
+                # 可选：移除binding（避免跨tab干扰）
+                try:
+                    await self.connector.call(
+                        "Runtime.removeBinding",
+                        {"name": "__browserFairyLongtaskCallback"},
+                        session_id=self.session_id,
+                        timeout=3.0
+                    )
+                except Exception:
+                    pass  # 忽略移除失败
+            except Exception as e:
+                logger.debug(f"Failed to cleanup longtask callback: {e}")
+            
+            self.longtask_callback_registered = False
+        
         # Cancel and wait for event consumer task completion
         if self.event_consumer_task:
             self.event_consumer_task.cancel()
@@ -714,6 +740,9 @@ class MemoryCollector:
         self.consumer_running = True
         self.event_consumer_task = asyncio.create_task(self._consume_events())
         
+        # Initialize long task monitoring (after all monitors are set up)
+        await self._inject_longtask_observer()
+        
     async def _consume_events(self):
         """Event consumer coroutine - proper stop conditions and lifecycle management."""
         logger.debug(f"Event consumer started for {self.hostname}")
@@ -780,6 +809,219 @@ class MemoryCollector:
             raise  # Re-raise to properly cancel task
         except Exception as e:
             logger.error(f"Fatal error in event consumer: {e}")
+    
+    async def _inject_longtask_observer(self) -> None:
+        """注入PerformanceObserver长任务监控"""
+        try:
+            # 1. 先注册CDP回调处理器
+            await self._register_longtask_callback()
+            
+            # 2. 构建注入脚本
+            injection_script = self._build_longtask_observer_script()
+            
+            # 3. 优先使用Page.addScriptToEvaluateOnNewDocument确保导航持久性
+            try:
+                await self.connector.call(
+                    "Page.enable",
+                    session_id=self.session_id,
+                    timeout=5.0
+                )
+                await self.connector.call(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    {"source": injection_script},
+                    session_id=self.session_id,
+                    timeout=10.0
+                )
+                logger.debug("Long task observer added via addScriptToEvaluateOnNewDocument")
+            except Exception as e:
+                logger.debug(f"Page.addScriptToEvaluateOnNewDocument failed: {e}")
+            
+            # 4. 兼容性兜底：Runtime.evaluate注入一次（当前页面立即生效）
+            await self.connector.call(
+                "Runtime.evaluate",
+                {
+                    "expression": injection_script,
+                    "returnByValue": False
+                },
+                session_id=self.session_id,
+                timeout=10.0
+            )
+            
+            self.longtask_observer_injected = True
+            logger.info(f"Long task observer injected for session {self.session_id}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to inject longtask observer: {e}")
+            self._record_injection_limitation(str(e)[:200])  # 截断错误信息
+            self.longtask_observer_injected = False
+
+    async def _register_longtask_callback(self) -> None:
+        """注册长任务数据回调"""
+        try:
+            # Runtime.enable在_enable_comprehensive_monitoring()中已调用，直接复用
+            
+            # 注册全局回调函数
+            await self.connector.call(
+                "Runtime.addBinding",
+                {"name": "__browserFairyLongtaskCallback"},
+                session_id=self.session_id
+            )
+            
+            # 监听bindingCalled事件
+            self.connector.on_event("Runtime.bindingCalled", self._on_longtask_data)
+            self.longtask_callback_registered = True
+            
+        except Exception as e:
+            logger.warning(f"Failed to register longtask callback: {e}")
+
+    def _build_longtask_observer_script(self) -> str:
+        """构建长任务监控注入脚本"""
+        # 压缩版本：控制脚本大小 <1.5KB
+        script = '''if('PerformanceObserver' in window&&!window.__browserFairyLongtaskObserverInstalled){try{window.__browserFairyLongtaskObserverInstalled=true;const o=new PerformanceObserver((l)=>{const e=l.getEntries();let p=0;for(const n of e){if(n.entryType==='longtask'&&n.duration>=50){if(++p>50)break;const d={timestamp:Date.now(),startTime:n.startTime,duration:n.duration,name:n.name||'unknown',attribution:n.attribution?.map(a=>({containerType:a.containerType||'unknown',containerName:a.containerName||'',containerSrc:(a.containerSrc||'').slice(0,200)}))?.slice(0,5)||[],stack:n.attribution?.length?null:(()=>{try{return new Error().stack}catch(e){return null}})()};if(window.__browserFairyLongtaskCallback){window.__browserFairyLongtaskCallback(JSON.stringify(d))}}}});o.observe({entryTypes:['longtask'],buffered:true})}catch(e){console.debug('BrowserFairy longtask observer injection failed:',e)}}'''
+        return script
+
+    async def _on_longtask_data(self, params: dict) -> None:
+        """处理长任务数据回调"""
+        # sessionId过滤
+        if params.get("sessionId") != self.session_id:
+            return
+            
+        if params.get("name") != "__browserFairyLongtaskCallback":
+            return
+            
+        try:
+            # JSON解析（现在payload是正确的JSON字符串）
+            task_data = json.loads(params.get("payload", "{}"))
+            
+            # 构建标准事件格式，添加必要字段
+            longtask_event = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "type": "longtask",
+                # 事件字段一致性：添加sessionId/targetId
+                "sessionId": self.session_id,
+                "targetId": self.target_id,
+                # 增强event_id生成
+                "event_id": make_event_id(
+                    "longtask", 
+                    self.hostname, 
+                    task_data.get("timestamp", ""),
+                    str(task_data.get("duration", 0)),
+                    self.current_url[:50],
+                    str(task_data.get("startTime", 0))
+                ),
+                "hostname": self.hostname,
+                "url": self.current_url,
+                "title": self.current_title,
+                # 长任务核心数据
+                "duration": task_data.get("duration", 0),
+                "startTime": task_data.get("startTime", 0),
+                "name": task_data.get("name", "unknown"),
+                # 优先处理attribution，备选stack
+                "attribution": task_data.get("attribution", []),
+                "stack": self._process_longtask_stack(task_data.get("stack")) if (task_data.get("stack") and not task_data.get("attribution")) else None
+            }
+            
+            # 频率控制调整为20 eps
+            if self._should_emit_longtask_event():
+                self.event_queue.put_nowait(("longtask", longtask_event))
+                
+        except Exception as e:
+            logger.warning(f"Error processing longtask data: {e}")
+
+    def _process_longtask_stack(self, raw_stack: str) -> dict:
+        """处理长任务调用栈（借鉴NetworkMonitor经验）"""
+        if not raw_stack:
+            return {"available": False, "reason": "no_stack"}
+            
+        try:
+            # 解析Error().stack格式的调用栈
+            lines = raw_stack.strip().split('\n')
+            frames = []
+            
+            for line in lines[1:31]:  # 跳过Error行，最多30帧
+                frame = self._parse_stack_line(line.strip())
+                if frame:
+                    frames.append(frame)
+                    
+            return {
+                "available": True,
+                "frames": frames,
+                "truncated": len(lines) > 31,
+                "source": "Error().stack"
+            }
+            
+        except Exception as e:
+            logger.debug(f"Failed to process longtask stack: {e}")
+            return {"available": False, "reason": f"parse_error: {str(e)}"}
+
+    def _parse_stack_line(self, line: str) -> Optional[dict]:
+        """解析单行调用栈"""
+        # 解析格式：at functionName (url:line:column)
+        # 或：at url:line:column
+        
+        patterns = [
+            r'at\s+(\w+)\s+\(([^:]+):(\d+):(\d+)\)',  # at func (url:line:col)
+            r'at\s+([^:]+):(\d+):(\d+)'               # at url:line:col
+        ]
+        
+        for pattern in patterns:
+            match = re.match(pattern, line)
+            if match:
+                if len(match.groups()) == 4:
+                    return {
+                        "functionName": match.group(1)[:150],
+                        "url": match.group(2)[:300],
+                        "lineNumber": int(match.group(3)),
+                        "columnNumber": int(match.group(4))
+                    }
+                elif len(match.groups()) == 3:
+                    return {
+                        "functionName": "anonymous",
+                        "url": match.group(1)[:300],
+                        "lineNumber": int(match.group(2)),
+                        "columnNumber": int(match.group(3))
+                    }
+                    
+        return None
+
+    def _should_emit_longtask_event(self) -> bool:
+        """长任务事件频率控制（调整为20 eps）"""
+        current_time = time.time()
+        
+        # 清理1秒前的记录
+        if not hasattr(self, '_longtask_timestamps'):
+            self._longtask_timestamps = []
+        
+        self._longtask_timestamps = [
+            ts for ts in self._longtask_timestamps
+            if current_time - ts < 1.0
+        ]
+        
+        # 每秒最多20个长任务事件（提高采样率）
+        LONGTASK_RATE_LIMIT = 20  # 可配置常量
+        if len(self._longtask_timestamps) >= LONGTASK_RATE_LIMIT:
+            return False
+            
+        self._longtask_timestamps.append(current_time)
+        return True
+
+    def _record_injection_limitation(self, error_message: str) -> None:
+        """记录注入失败情况（不做脆弱的CSP判断）"""
+        timestamp = datetime.now(timezone.utc).isoformat()
+        limitation_event = {
+            "timestamp": timestamp,
+            "type": "longtask_limitation",
+            "event_id": make_event_id("longtask_injection_failed", self.hostname, timestamp),
+            "hostname": self.hostname,
+            "reason": f"injection_failed: {error_message}",
+            "url": self.current_url
+        }
+        
+        try:
+            if self.event_queue:
+                self.event_queue.put_nowait(("longtask_limitation", limitation_event))
+        except:
+            pass  # 不影响主流程
 
 
 class MemoryMonitor:

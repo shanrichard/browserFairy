@@ -130,7 +130,8 @@ class DataManager:
                 "network.jsonl": "Network request monitoring per hostname",
                 "correlations.jsonl": "Cross-layer correlation analysis per hostname",
                 "storage_global.jsonl": "Storage quota data for all origins",
-                "gc.jsonl": "Garbage collection events per hostname"
+                "gc.jsonl": "Garbage collection events per hostname",
+                "longtask.jsonl": "Long task events (>50ms) per hostname"
             }
         }
         
@@ -238,3 +239,10 @@ class DataManager:
             return
         file_path = f"{hostname}/gc.jsonl"
         await self.data_writer.append_jsonl(file_path, gc_data)
+
+    async def write_longtask_data(self, hostname: str, data: Dict[str, Any]) -> None:
+        """写入长任务数据"""
+        if not self.running:
+            return
+        file_path = f"{hostname}/longtask.jsonl"
+        await self.data_writer.append_jsonl(file_path, data)

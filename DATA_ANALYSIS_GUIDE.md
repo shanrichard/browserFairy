@@ -8,9 +8,10 @@
   - [1. 内存监控数据 (memory.jsonl)](#1-内存监控数据-memoryjsonl)
   - [2. 网络请求数据 (network.jsonl)](#2-网络请求数据-networkjsonl)
   - [3. Console日志数据 (console.jsonl)](#3-console日志数据-consolejsonl)
-  - [4. 垃圾回收数据 (gc.jsonl)](#4-垃圾回收数据-gcjsonl)
-  - [5. 存储监控数据 (storage.jsonl)](#5-存储监控数据-storagejsonl)
-  - [6. 关联分析数据 (correlations.jsonl)](#6-关联分析数据-correlationsjsonl)
+  - [4. 长任务检测数据 (longtask.jsonl)](#4-长任务检测数据-longtaskjsonl)
+  - [5. 垃圾回收数据 (gc.jsonl)](#5-垃圾回收数据-gcjsonl)
+  - [6. 存储监控数据 (storage.jsonl)](#6-存储监控数据-storagejsonl)
+  - [7. 关联分析数据 (correlations.jsonl)](#7-关联分析数据-correlationsjsonl)
 - [高级功能分析](#高级功能分析)
   - [网络请求调用栈分析](#网络请求调用栈分析)
   - [DOMStorage快照分析](#domstorage快照分析)
@@ -36,6 +37,7 @@ BrowserFairy 生成的监控数据采用 **JSONL格式**（JSON Lines），每�
     │   ├── memory.jsonl              # 内存监控时序数据
     │   ├── console.jsonl             # Console日志和异常
     │   ├── network.jsonl             # 网络请求生命周期
+    │   ├── longtask.jsonl            # 长任务事件（>50ms JavaScript执行）
     │   ├── gc.jsonl                  # 垃圾回收事件
     │   ├── storage.jsonl             # 存储监控数据
     │   └── correlations.jsonl        # 跨指标关联分析
@@ -407,7 +409,89 @@ BrowserFairy 生成的监控数据采用 **JSONL格式**（JSON Lines），每�
 }
 ```
 
-### 4. 垃圾回收数据 (gc.jsonl)
+### 4. 长任务检测数据 (longtask.jsonl)
+
+**采集原理**：通过PerformanceObserver API检测>50ms的JavaScript执行任务，自动记录执行时间、源头信息和调用栈。
+
+**频率控制**：最多20个事件/秒，避免高频长任务导致数据洪流。
+
+#### 4.1 长任务事件
+```json
+{
+  "type": "longtask",
+  "timestamp": "2025-08-16T14:30:35.123Z",
+  "hostname": "example.com",
+  "url": "https://example.com/dashboard",
+  "title": "Dashboard - Example App",
+  "sessionId": "session_abc123",
+  "targetId": "target_456",
+  "duration": 156.7,  // 任务持续时间（毫秒）
+  "startTime": 12345.6,  // 任务开始时间（相对于页面加载）
+  "name": "self",  // 任务类型
+  "attribution": [  // 归因信息（优先）
+    {
+      "containerType": "iframe",
+      "containerName": "ads-frame",
+      "containerSrc": "https://ads.example.com/widget.html"
+    }
+  ],
+  "stack": null,  // 有attribution时为null
+  "event_id": "longtask_unique_hash"
+}
+```
+
+#### 4.2 长任务（带调用栈）
+```json
+{
+  "type": "longtask",
+  "timestamp": "2025-08-16T14:30:40.456Z",
+  "hostname": "example.com",
+  "duration": 89.3,
+  "startTime": 15678.9,
+  "name": "unknown",
+  "attribution": [],  // 无归因信息
+  "stack": {  // 有调用栈（备选）
+    "available": true,
+    "source": "Error().stack",
+    "truncated": false,
+    "frames": [
+      {
+        "functionName": "processLargeDataset",
+        "url": "https://example.com/data-processor.js",
+        "lineNumber": 234,
+        "columnNumber": 15
+      },
+      {
+        "functionName": "updateUI",
+        "url": "https://example.com/ui-manager.js",
+        "lineNumber": 89,
+        "columnNumber": 8
+      }
+    ]
+  },
+  "event_id": "longtask_with_stack_hash"
+}
+```
+
+#### 4.3 注入失败记录
+```json
+{
+  "type": "longtask_limitation",
+  "timestamp": "2025-08-16T14:30:25.000Z",
+  "hostname": "secure-banking.com",
+  "url": "https://secure-banking.com/transfer",
+  "reason": "injection_failed: Content Security Policy directive: \"script-src 'self'\"",
+  "event_id": "longtask_limitation_hash"
+}
+```
+
+**分析价值**：
+- **卡顿根因定位**：直接定位哪个函数/操作导致主线程阻塞
+- **第三方影响评估**：通过attribution识别广告、插件等外部代码的性能影响
+- **代码优化指导**：调用栈信息指向具体需要优化的代码位置
+- **CSP兼容性**：记录内容安全策略限制，评估监控覆盖率
+
+### 5. 垃圾回收数据 (gc.jsonl)
 
 ```json
 {
@@ -839,6 +923,35 @@ def analyze_network(file_path):
     
     print(f"  网络: {large_requests}个大请求, {detailed_stacks}个详细调用栈")
 
+def analyze_longtask(file_path):
+    """分析长任务数据"""
+    longtasks = 0
+    with_attribution = 0
+    with_stack = 0
+    max_duration = 0
+    injection_failures = 0
+    
+    with open(file_path, 'r') as f:
+        for line in f:
+            data = json.loads(line)
+            if data['type'] == 'longtask':
+                longtasks += 1
+                duration = data.get('duration', 0)
+                max_duration = max(max_duration, duration)
+                
+                if data.get('attribution') and len(data['attribution']) > 0:
+                    with_attribution += 1
+                if data.get('stack') and data['stack'].get('available'):
+                    with_stack += 1
+            elif data['type'] == 'longtask_limitation':
+                injection_failures += 1
+    
+    print(f"  长任务: {longtasks}个事件, 最长{max_duration:.1f}ms")
+    if with_attribution > 0:
+        print(f"    归因信息: {with_attribution}个, 调用栈: {with_stack}个")
+    if injection_failures > 0:
+        print(f"    注入失败: {injection_failures}个（CSP等限制）")
+
 def analyze_storage(file_path):
     """分析存储数据"""
     snapshots = 0
@@ -861,13 +974,80 @@ if __name__ == '__main__':
     analyze_session(sys.argv[1])
 ```
 
+### 长任务卡顿分析示例
+
+```python
+# 分析长任务卡顿问题
+def analyze_longtask_patterns(longtask_file):
+    """分析长任务模式，识别性能瓶颈"""
+    import json
+    
+    tasks_by_duration = []
+    third_party_tasks = []
+    injection_failures = 0
+    
+    with open(longtask_file, 'r') as f:
+        for line in f:
+            data = json.loads(line)
+            if data['type'] == 'longtask':
+                duration = data.get('duration', 0)
+                tasks_by_duration.append((duration, data))
+                
+                # 检查第三方代码影响
+                attribution = data.get('attribution', [])
+                for attr in attribution:
+                    if attr.get('containerType') == 'iframe':
+                        third_party_tasks.append((duration, attr))
+            elif data['type'] == 'longtask_limitation':
+                injection_failures += 1
+    
+    # 分析最耗时的任务
+    tasks_by_duration.sort(reverse=True)
+    print(f"发现 {len(tasks_by_duration)} 个长任务")
+    print(f"第三方代码任务: {len(third_party_tasks)} 个")
+    if injection_failures > 0:
+        print(f"⚠️  注入失败: {injection_failures} 个（CSP限制等）")
+    
+    print("\n🔥 最耗时的5个任务:")
+    for duration, task in tasks_by_duration[:5]:
+        print(f"  {duration:.1f}ms - {task.get('name', 'unknown')}")
+        if task.get('stack') and task['stack'].get('frames'):
+            frame = task['stack']['frames'][0]
+            print(f"    函数: {frame.get('functionName', 'anonymous')}")
+            print(f"    文件: {frame.get('url', 'unknown')}:{frame.get('lineNumber', '?')}")
+        
+        attribution = task.get('attribution', [])
+        if attribution:
+            attr = attribution[0]
+            print(f"    源头: {attr.get('containerType', 'unknown')} - {attr.get('containerSrc', 'unknown')[:50]}...")
+
+# 使用示例
+analyze_longtask_patterns('example.com/longtask.jsonl')
+
+# 输出示例:
+# 发现 23 个长任务
+# 第三方代码任务: 8 个
+# ⚠️  注入失败: 2 个（CSP限制等）
+# 
+# 🔥 最耗时的5个任务:
+#   234.5ms - unknown
+#     函数: processLargeDataset
+#     文件: https://example.com/data-processor.js:156
+#   189.3ms - self
+#     源头: iframe - https://ads.example.com/widget.html...
+#   156.7ms - unknown
+#     函数: updateUI
+#     文件: https://example.com/ui-manager.js:89
+```
+
 ## 总结
 
-BrowserFairy 的监控数据包含丰富的性能和行为信息，但很多高级功能（如调用栈、存储快照）**不在文件开头**，需要：
+BrowserFairy 的监控数据包含丰富的性能和行为信息，但很多高级功能（如调用栈、存储快照、长任务检测）**不在文件开头**，需要：
 
 1. **完整读取文件**，不要只看前几行
 2. **理解触发条件**，知道什么情况下会产生特殊数据
 3. **跨文件关联**，结合多个数据源进行综合分析
 4. **使用自动化工具**，编写脚本批量处理
+5. **重点关注长任务**，直接定位页面卡顿根因
 
-通过充分利用这些数据，可以精确定位性能问题、内存泄漏、异常模式等Web应用的深层问题。
+通过充分利用这些数据，可以精确定位性能问题、内存泄漏、异常模式、JavaScript执行瓶颈等Web应用的深层问题。

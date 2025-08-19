@@ -434,6 +434,10 @@ async def comprehensive_data_callback(data_manager, data: dict):
             await data_manager.write_correlation_data(hostname, data)
         elif data_type == "gc_event":
             await data_manager.write_gc_data(hostname, data)
+        elif data_type == "longtask":
+            await data_manager.write_longtask_data(hostname, data)
+        elif data_type == "longtask_limitation":
+            await data_manager.write_longtask_data(hostname, data)  # 同一文件
         else:
             logger.warning(f"Unknown data type for routing: {data_type}")
             
@@ -443,7 +447,8 @@ async def comprehensive_data_callback(data_manager, data: dict):
 
 async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = None,
                               status_callback: Optional[Callable] = None,
-                              exit_event: Optional[asyncio.Event] = None) -> int:
+                              exit_event: Optional[asyncio.Event] = None,
+                              config: Optional['MonitorConfig'] = None) -> int:
     """Start comprehensive monitoring - daemon support version."""
     connector = ChromeConnector(host=host, port=port)
     
@@ -459,15 +464,66 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
         # Initialize components 
         tab_monitor = TabMonitor(connector)
         memory_monitor = MemoryMonitor(connector) 
-        data_manager = DataManager(connector)
+        
+        # Create DataManager with config data_dir if provided
+        if config and config.data_dir:
+            data_manager = DataManager(connector, data_dir=config.data_dir)
+        else:
+            data_manager = DataManager(connector)
         
         # Start data management
         await data_manager.start()
         print(f"✓ Comprehensive monitoring session: {data_manager.session_dir.name}")
         
-        # Create unified data callback using partial
-        from functools import partial
-        unified_callback = partial(comprehensive_data_callback, data_manager)
+        # Create unified data callback with optional filtering
+        if config:
+            # Create filtered callback wrapper
+            original_callback = comprehensive_data_callback  # Capture reference via closure
+            
+            async def unified_filtered_callback(data):
+                """Filter data based on config before calling original callback"""
+                data_type = data.get('type', '')
+                
+                # Filter based on data type
+                if data_type == 'memory':
+                    if not config.should_collect('memory'):
+                        return
+                        
+                elif data_type == 'console':
+                    level = data.get('level', 'log')
+                    if not config.should_collect('console', level):
+                        return
+                        
+                elif data_type == 'exception':
+                    if not config.should_collect('exception'):
+                        return
+                        
+                elif data_type in ['network_request_start', 
+                                 'network_request_complete', 
+                                 'network_request_failed']:
+                    # Map network subtypes
+                    if data_type == 'network_request_failed':
+                        if not config.should_collect('network', 'failed'):
+                            return
+                    elif data_type == 'network_request_complete':
+                        if not config.should_collect('network', 'complete'):
+                            return
+                    elif data_type == 'network_request_start':
+                        if not config.should_collect('network', 'start'):
+                            return
+                
+                elif data_type == 'gc_event':
+                    if not config.should_collect('gc'):
+                        return
+                
+                # If not filtered, call original callback
+                await original_callback(data_manager, data)
+            
+            unified_callback = unified_filtered_callback
+        else:
+            # No config, use original callback with partial
+            from functools import partial
+            unified_callback = partial(comprehensive_data_callback, data_manager)
         
         # Set comprehensive monitoring callback
         memory_monitor.set_data_callback(unified_callback)
@@ -1160,6 +1216,19 @@ async def main() -> None:
     )
     
     parser.add_argument(
+        "--data-dir",
+        type=str,
+        help="Directory to save monitoring data (default: ~/BrowserFairyData)"
+    )
+    
+    parser.add_argument(
+        "--output",
+        type=str,
+        default='all',
+        help="Data types to collect: all, errors-only, performance, minimal, ai-debug, or comma-separated list"
+    )
+    
+    parser.add_argument(
         "--duration",
         type=int,
         help="Duration in seconds for monitoring (default: unlimited)"
@@ -1214,16 +1283,31 @@ async def main() -> None:
         exit_code = await start_data_collection(args.host, args.port, args.duration)
         sys.exit(exit_code)
     elif args.monitor_comprehensive:
+        # Create config if new parameters are provided
+        config = None
+        if hasattr(args, 'data_dir') and args.data_dir:
+            from .config import MonitorConfig
+            config = MonitorConfig(
+                data_dir=args.data_dir,
+                output=args.output
+            )
+        elif hasattr(args, 'output') and args.output != 'all':
+            from .config import MonitorConfig
+            config = MonitorConfig(
+                data_dir=None,
+                output=args.output
+            )
+        
         if args.daemon:
-            # Daemon mode
+            # Daemon mode (config not supported yet in daemon mode)
             if os.name != 'posix':
                 print("Daemon mode not supported on Windows, running in foreground...")
-                exit_code = await monitor_comprehensive(args.host, args.port, args.duration)
+                exit_code = await monitor_comprehensive(args.host, args.port, args.duration, config=config)
             else:
                 exit_code = await run_daemon_comprehensive(args.host, args.port, args.duration, args.log_file)
         else:
-            # Foreground mode: call original function (new parameters are None for compatibility)
-            exit_code = await monitor_comprehensive(args.host, args.port, args.duration)
+            # Foreground mode: pass config if created
+            exit_code = await monitor_comprehensive(args.host, args.port, args.duration, config=config)
         sys.exit(exit_code)
     elif args.monitor_signalplus:
         exit_code = await monitor_single_site(args.host, args.port, args.duration)

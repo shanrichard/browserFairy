@@ -38,6 +38,7 @@ BrowserFairy通过**自动化持续监控**弥补这一空白，让性能问题�
 
 ### 智能性能分析
 - **内存全景监控**：JS Heap、DOM节点、事件监听器详情分组、文档和帧数的完整监控
+- **长任务检测**：自动检测>50ms的JavaScript执行任务，记录执行源头和调用栈，精确定位页面卡顿根因
 - **网络行为追踪**：HTTP请求生命周期、响应大小、错误率的实时统计  
 - **WebSocket实时监控**：WebSocket连接全生命周期、消息帧监控、错误诊断
 - **Console异常捕获**：JavaScript错误、警告、异常的自动收集和分类
@@ -173,6 +174,7 @@ browserfairy --snapshot-storage-once \
 │   │   ├── memory.jsonl          # 内存监控时序数据
 │   │   ├── console.jsonl         # Console日志和异常
 │   │   ├── network.jsonl         # 网络请求+WebSocket消息
+│   │   ├── longtask.jsonl        # 长任务事件（>50ms JavaScript执行）
 │   │   ├── gc.jsonl              # 垃圾回收（GC）事件
 │   │   ├── storage.jsonl         # 存储数据：配额/DOMStorage事件/手动快照
 │   │   └── correlations.jsonl    # 跨指标关联分析
@@ -216,6 +218,7 @@ $ tail -f ~/BrowserFairyData/monitor.log
 [2025-08-16 14:35:12] Console Error: TypeError: Cannot read property 'value' of null
 [2025-08-16 14:36:33] Large Request: https://api.trading.com/data (5.2MB)
 [2025-08-16 14:37:15] Large Response: https://cdn.example.com/bundle.js (3.1MB)
+[2025-08-16 14:38:22] Long Task: 156ms execution blocked main thread
 [2025-08-16 14:42:18] Correlation: 5 events correlated
 
 # 分析数据（监控结束后）
