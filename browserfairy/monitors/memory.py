@@ -309,7 +309,7 @@ class MemoryCollector:
             # Asynchronously start detailed analysis to avoid blocking sampling cycle
             if not self._detailed_analysis_task or self._detailed_analysis_task.done():
                 self._detailed_analysis_task = asyncio.create_task(
-                    self._async_detailed_analysis(current_count, basic_stats)
+                    self._async_detailed_analysis(current_count, basic_stats, growth_delta)
                 )
             analysis_result["analysisTriggered"] = True
             
@@ -381,16 +381,10 @@ class MemoryCollector:
             type_counts[event_type] += 1
         return dict(type_counts)
     
-    async def _async_detailed_analysis(self, current_count: int, basic_stats: dict) -> None:
+    async def _async_detailed_analysis(self, current_count: int, basic_stats: dict, growth_delta: int) -> None:
         """Execute detailed analysis asynchronously to avoid blocking memory sampling cycle."""
         try:
-            # Enable DOMDebugger domain only when needed
-            await self.connector.call(
-                "DOMDebugger.enable", 
-                session_id=self.session_id, 
-                timeout=10.0
-            )
-            
+            # DOMDebugger domain doesn't require enable/disable - directly use getEventListeners
             # Execute detailed analysis with timeout control
             detailed_sources = await asyncio.wait_for(
                 self._perform_detailed_listener_analysis(), timeout=3.0
@@ -406,7 +400,7 @@ class MemoryCollector:
                     "sessionId": self.session_id,
                     "eventListenersAnalysis": {
                         "summary": basic_stats,
-                        "growthDelta": current_count - self._last_listener_count,
+                        "growthDelta": growth_delta,
                         "analysisTriggered": True,
                         "detailedSources": detailed_sources
                     }
@@ -421,15 +415,6 @@ class MemoryCollector:
             logger.warning("Detailed event listener analysis timeout (3s)")
         except Exception as e:
             logger.warning(f"Detailed event listener analysis failed: {e}")
-        finally:
-            # Optional: disable DOMDebugger domain to reduce event noise
-            try:
-                await self.connector.call(
-                    "DOMDebugger.disable", 
-                    session_id=self.session_id
-                )
-            except Exception:
-                pass
     
     async def _perform_detailed_listener_analysis(self) -> List[Dict[str, Any]]:
         """Detailed listener source analysis - limited candidate sampling to avoid full page scanning."""
