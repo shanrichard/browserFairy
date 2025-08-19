@@ -38,7 +38,8 @@ BrowserFairy通过**自动化持续监控**弥补这一空白，让性能问题�
 
 ### 智能性能分析
 - **内存全景监控**：JS Heap、DOM节点、事件监听器、文档和帧数的完整监控
-- **网络行为追踪**：请求生命周期、响应大小、错误率的实时统计  
+- **网络行为追踪**：HTTP请求生命周期、响应大小、错误率的实时统计  
+- **WebSocket实时监控**：WebSocket连接全生命周期、消息帧监控、错误诊断
 - **Console异常捕获**：JavaScript错误、警告、异常的自动收集和分类
 - **时间窗口关联**：3秒时间窗口内的多事件智能关联分析
 
@@ -171,7 +172,7 @@ browserfairy --snapshot-storage-once \
 │   ├── example.com/               # 按网站分组
 │   │   ├── memory.jsonl          # 内存监控时序数据
 │   │   ├── console.jsonl         # Console日志和异常
-│   │   ├── network.jsonl         # 网络请求生命周期
+│   │   ├── network.jsonl         # 网络请求+WebSocket消息
 │   │   ├── gc.jsonl              # 垃圾回收（GC）事件
 │   │   ├── storage.jsonl         # 存储数据：配额/DOMStorage事件/手动快照
 │   │   └── correlations.jsonl    # 跨指标关联分析
@@ -244,7 +245,8 @@ trading.site.com:
 | 监控维度 | 具体指标 | 检测能力 |
 |---------|---------|---------|
 | 🧠 **内存监控** | JS Heap, DOM节点, 事件监听器 | 内存泄漏、DOM累积 |
-| 🌐 **网络分析** | 请求大小、响应时间、错误率 + **调用栈关联** | 性能瓶颈、资源浪费、**代码定位** |
+| 🌐 **网络分析** | HTTP请求大小、响应时间、错误率 + **调用栈关联** | 性能瓶颈、资源浪费、**代码定位** |
+| 🔌 **WebSocket监控** | 连接生命周期、消息帧、错误事件 | 实时数据问题、消息风暴 |
 | ⚠️ **Console监控** | JS错误、警告、异常 | 代码质量、运行异常 |
 | 🧹 **GC监控** | 堆使用显著下降、GC关键字日志 | GC频率、长GC提示（近似） |
 | 💾 **存储跟踪** | 配额监控（含页面兜底）/DOMStorage事件/手动快照 | 存储空间与键值变更追踪 |
@@ -369,6 +371,57 @@ trading.site.com:
 - 定位"某组件初始化时意外触发5.2MB数据下载"的具体代码路径
 - 发现无用或重复API调用的JavaScript发起位置
 - 追踪高频请求背后的业务逻辑调用链路
+
+### 🔌 WebSocket实时监控（新增）
+**全生命周期监控**：自动追踪WebSocket连接从创建到关闭的完整过程，帮助发现实时数据相关的性能问题。
+
+**监控内容**：
+- **连接管理**：连接创建、关闭、错误事件的完整记录
+- **消息帧监控**：发送和接收消息的实时监控，支持文本和二进制消息
+- **数据安全处理**：文本消息截断至1024字符，二进制消息仅记录类型和长度
+- **性能统计**：按连接统计每秒消息帧数，及时发现"消息风暴"
+
+**事件类型**：
+```json
+// WebSocket连接创建
+{
+  "type": "websocket_created",
+  "url": "wss://example.com/live",
+  "requestId": "ws_123"
+}
+
+// 文本消息帧
+{
+  "type": "websocket_frame_sent",
+  "opcode": 1,
+  "payloadLength": 156,
+  "payloadText": "{\"type\":\"subscribe\",\"channel\":\"prices\"}…",
+  "frameStats": {
+    "framesThisSecond": 12,
+    "connectionAge": 45.6
+  }
+}
+
+// 二进制消息帧
+{
+  "type": "websocket_frame_received",
+  "opcode": 2,
+  "payloadLength": 2048,
+  "payloadType": "binary"
+}
+
+// WebSocket错误
+{
+  "type": "websocket_frame_error",
+  "errorMessage": "Frame parsing failed: invalid UTF-8"
+}
+```
+
+**典型问题场景**：
+- **消息风暴**：交易系统每秒推送200条行情数据导致渲染卡顿
+- **连接泄漏**：SPA应用路由切换时未正确关闭旧WebSocket连接
+- **错误重连**：网络问题导致频繁重连尝试，影响性能
+- **数据编码问题**：非标准数据格式导致解析失败
 
 ### 🏗 技术架构特点
 

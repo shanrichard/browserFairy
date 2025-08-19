@@ -2,12 +2,13 @@
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from ..core.connector import ChromeConnector
-from ..utils.event_id import make_event_id
+from ..utils.event_id import make_event_id, make_network_event_id
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,10 @@ class NetworkMonitor:
             "debugger_enable_failures": 0
         }
         
+        # WebSocket monitoring attributes
+        self.websocket_connections = {}  # requestId -> {url, created_at}
+        self.websocket_frame_stats = {}  # (hostname, path) -> frame_count_per_second
+        
     def set_hostname(self, hostname: str):
         """Set hostname for data grouping."""
         self.hostname = hostname
@@ -51,6 +56,13 @@ class NetworkMonitor:
         self.connector.on_event("Network.loadingFinished", self._on_request_finished)
         self.connector.on_event("Network.loadingFailed", self._on_request_failed)
         
+        # WebSocket lifecycle events
+        self.connector.on_event("Network.webSocketCreated", self._on_websocket_created)
+        self.connector.on_event("Network.webSocketFrameSent", self._on_websocket_frame_sent)
+        self.connector.on_event("Network.webSocketFrameReceived", self._on_websocket_frame_received)
+        self.connector.on_event("Network.webSocketFrameError", self._on_websocket_frame_error)
+        self.connector.on_event("Network.webSocketClosed", self._on_websocket_closed)
+        
         # Enable Debugger for enhanced stack collection
         await self._enable_debugger_globally()
     
@@ -60,6 +72,13 @@ class NetworkMonitor:
         self.connector.off_event("Network.responseReceived", self._on_response_received)
         self.connector.off_event("Network.loadingFinished", self._on_request_finished)
         self.connector.off_event("Network.loadingFailed", self._on_request_failed)
+        
+        # WebSocket event cleanup
+        self.connector.off_event("Network.webSocketCreated", self._on_websocket_created)
+        self.connector.off_event("Network.webSocketFrameSent", self._on_websocket_frame_sent)
+        self.connector.off_event("Network.webSocketFrameReceived", self._on_websocket_frame_received)
+        self.connector.off_event("Network.webSocketFrameError", self._on_websocket_frame_error)
+        self.connector.off_event("Network.webSocketClosed", self._on_websocket_closed)
     
     async def _on_request_start(self, params: dict) -> None:
         """Request start - pure queue path: filter→limit→construct metadata→enqueue."""
@@ -118,15 +137,15 @@ class NetworkMonitor:
         
         # Cache request data (existing logic unchanged)
         self.pending_requests[request_id] = request_data
-        # Add event_id
+        # Add event_id using enhanced network event ID generator
         try:
-            request_data["event_id"] = make_event_id(
+            request_data["event_id"] = make_network_event_id(
                 "network_request_start",
                 self.hostname or "",
                 request_data.get("timestamp", ""),
                 request_id,
-                request_data.get("method", ""),
-                request_data.get("url", "")
+                method=request_data.get("method", ""),
+                url=request_data.get("url", "")
             )
         except Exception:
             pass
@@ -221,15 +240,17 @@ class NetworkMonitor:
         self.stack_candidates.pop(request_id, None)
         
         # Single exit: enqueue for processing (existing logic unchanged)
-        # Add event_id
+        # Add event_id with enhanced uniqueness for complete events
         try:
-            request_data["event_id"] = make_event_id(
+            request_data["event_id"] = make_network_event_id(
                 "network_request_complete",
                 self.hostname or "",
                 request_data.get("timestamp", ""),
                 request_id,
-                request_data.get("status", 0),
-                request_data.get("url", "")
+                status=request_data.get("status", 0),
+                responseSize=request_data.get("responseSize", 0),
+                encodedDataLength=encoded_length,
+                url=request_data.get("url", "")
             )
         except Exception:
             pass
@@ -256,15 +277,15 @@ class NetworkMonitor:
             "canceled": params.get("canceled", False),
             "hostname": self.hostname
         })
-        # Add event_id
+        # Add event_id with error details for uniqueness
         try:
-            request_data["event_id"] = make_event_id(
+            request_data["event_id"] = make_network_event_id(
                 "network_request_failed",
                 self.hostname or "",
                 request_data.get("timestamp", ""),
                 request_id,
-                request_data.get("url", ""),
-                request_data.get("errorText", "")
+                url=request_data.get("url", ""),
+                errorText=request_data.get("errorText", "")
             )
         except Exception:
             pass
@@ -358,17 +379,17 @@ class NetworkMonitor:
         if candidate and candidate.get("initial_reason") == "large_upload":
             return "large_upload"
         
-        # Priority 3: Count-based trigger confirmation
+        # Priority 3: Count-based trigger confirmation (ADJUSTED THRESHOLDS)
         origin, path = self._parse_origin_path(url)
         
-        # High frequency API (>50 times)
+        # High frequency API (>=10 times, lowered from 50)
         api_count = self.api_count.get((origin, path), 0)
-        if api_count > 50:
+        if api_count >= 10:  # Lowered threshold for earlier detection
             return f"high_frequency_api_{api_count}"
             
-        # Repeated resource (>5 times and >10KB single)
+        # Repeated resource (>=3 times and >10KB single, lowered from 5)
         resource_count = self.resource_count.get((origin, path), 0)
-        if resource_count > 5 and encoded_length > 10240:  # 10KB
+        if resource_count >= 3 and encoded_length > 10240:  # 10KB
             return f"repeated_resource_{resource_count}"
         
         return None
@@ -507,3 +528,234 @@ class NetworkMonitor:
             "recent_triggers": self._recent_triggers[-10:],  # Recent 10 trigger records
             "lifetime_stats": self._debug_stats.copy()
         }
+    
+    # WebSocket Event Handlers
+    
+    async def _on_websocket_created(self, params: dict) -> None:
+        """WebSocket connection created - store URL mapping."""
+        # sessionId filtering
+        if params.get("sessionId") != self.session_id:
+            return
+            
+        request_id = params["requestId"]
+        url = params["url"]
+        
+        # Store connection info for later frame events
+        self.websocket_connections[request_id] = {
+            "url": url,
+            "created_at": time.time()
+        }
+        
+        # Create connection created event
+        connection_data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "websocket_created",
+            "requestId": request_id,
+            "url": url[:500],  # Truncate URL like HTTP requests
+            "hostname": self.hostname,
+            "sessionId": self.session_id
+        }
+        
+        # Generate event_id
+        try:
+            connection_data["event_id"] = make_event_id(
+                "websocket_created",
+                self.hostname or "",
+                connection_data["timestamp"],
+                request_id,
+                url[:100]  # Include URL hash for uniqueness
+            )
+        except Exception:
+            pass
+        
+        # Enqueue event
+        try:
+            self.event_queue.put_nowait(("websocket_created", connection_data))
+        except asyncio.QueueFull:
+            logger.warning("Network event queue full, dropping websocket_created")
+    
+    async def _on_websocket_frame_sent(self, params: dict) -> None:
+        """WebSocket frame sent event."""
+        await self._process_websocket_frame(params, "websocket_frame_sent")
+    
+    async def _on_websocket_frame_received(self, params: dict) -> None:
+        """WebSocket frame received event."""
+        await self._process_websocket_frame(params, "websocket_frame_received")
+    
+    async def _process_websocket_frame(self, params: dict, event_type: str) -> None:
+        """Process WebSocket frame event (sent or received)."""
+        # sessionId filtering
+        if params.get("sessionId") != self.session_id:
+            return
+            
+        request_id = params["requestId"]
+        
+        # Get URL from stored connection info
+        connection_info = self.websocket_connections.get(request_id)
+        if not connection_info:
+            # Connection not tracked, create minimal data
+            url = "unknown"
+            connection_age = 0
+        else:
+            url = connection_info["url"]
+            connection_age = time.time() - connection_info["created_at"]
+        
+        # Extract frame data
+        response = params.get("response", {})
+        opcode = response.get("opcode", 0)
+        payload_data = response.get("payloadData", "")
+        
+        # Build frame data
+        frame_data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": event_type,
+            "requestId": request_id,
+            "url": url[:500],
+            "opcode": opcode,
+            "payloadLength": len(payload_data),
+            "hostname": self.hostname,
+            "sessionId": self.session_id
+        }
+        
+        # Handle payload based on opcode
+        if opcode == 1:  # Text frame
+            frame_data["payloadText"] = payload_data[:1024]  # Truncate to 1024 chars
+            if len(payload_data) > 1024:
+                frame_data["payloadText"] += "...[truncated]"
+        elif opcode == 2:  # Binary frame
+            # For binary frames, only record length and type
+            frame_data["payloadType"] = "binary"
+            # Don't store payload content for binary frames
+        # For control frames (ping/pong/close), opcode is recorded but no payload
+        
+        # Add frame statistics
+        frame_data["frameStats"] = self._get_frame_stats(url, connection_age)
+        
+        # Generate event_id
+        try:
+            frame_data["event_id"] = make_event_id(
+                event_type,
+                self.hostname or "",
+                frame_data["timestamp"],
+                request_id,
+                opcode,
+                len(payload_data)
+            )
+        except Exception:
+            pass
+        
+        # Enqueue event
+        try:
+            self.event_queue.put_nowait((event_type, frame_data))
+        except asyncio.QueueFull:
+            logger.warning(f"Network event queue full, dropping {event_type}")
+    
+    async def _on_websocket_frame_error(self, params: dict) -> None:
+        """WebSocket frame error event."""
+        # sessionId filtering
+        if params.get("sessionId") != self.session_id:
+            return
+            
+        request_id = params["requestId"]
+        error_message = params.get("errorMessage", "Unknown WebSocket error")
+        
+        # Get URL from stored connection info
+        connection_info = self.websocket_connections.get(request_id)
+        url = connection_info["url"] if connection_info else "unknown"
+        
+        error_data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "websocket_frame_error",
+            "requestId": request_id,
+            "url": url[:500],
+            "errorMessage": error_message[:200],  # Truncate error message
+            "hostname": self.hostname,
+            "sessionId": self.session_id
+        }
+        
+        # Generate event_id
+        try:
+            error_data["event_id"] = make_event_id(
+                "websocket_frame_error",
+                self.hostname or "",
+                error_data["timestamp"],
+                request_id,
+                error_message[:50]
+            )
+        except Exception:
+            pass
+        
+        # Enqueue event
+        try:
+            self.event_queue.put_nowait(("websocket_frame_error", error_data))
+        except asyncio.QueueFull:
+            logger.warning("Network event queue full, dropping websocket_frame_error")
+    
+    async def _on_websocket_closed(self, params: dict) -> None:
+        """WebSocket connection closed event."""
+        # sessionId filtering
+        if params.get("sessionId") != self.session_id:
+            return
+            
+        request_id = params["requestId"]
+        
+        # Get URL from stored connection info
+        connection_info = self.websocket_connections.get(request_id)
+        url = connection_info["url"] if connection_info else "unknown"
+        
+        closed_data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "websocket_closed",
+            "requestId": request_id,
+            "url": url[:500],
+            "hostname": self.hostname,
+            "sessionId": self.session_id
+        }
+        
+        # Generate event_id
+        try:
+            closed_data["event_id"] = make_event_id(
+                "websocket_closed",
+                self.hostname or "",
+                closed_data["timestamp"],
+                request_id
+            )
+        except Exception:
+            pass
+        
+        # Clean up connection tracking
+        self.websocket_connections.pop(request_id, None)
+        
+        # Enqueue event
+        try:
+            self.event_queue.put_nowait(("websocket_closed", closed_data))
+        except asyncio.QueueFull:
+            logger.warning("Network event queue full, dropping websocket_closed")
+    
+    def _get_frame_stats(self, url: str, connection_age: float) -> dict:
+        """Get frame statistics for aggregation analysis."""
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.netloc or "unknown"
+            path = parsed.path or "/"
+            
+            # Update frame count for current second
+            current_second = int(time.time())
+            stats_key = (hostname, path, current_second)
+            
+            if stats_key not in self.websocket_frame_stats:
+                self.websocket_frame_stats[stats_key] = 0
+            self.websocket_frame_stats[stats_key] += 1
+            
+            # Clean up old statistics (keep last 60 seconds)
+            old_keys = [k for k in self.websocket_frame_stats.keys() if k[2] < current_second - 60]
+            for old_key in old_keys:
+                del self.websocket_frame_stats[old_key]
+            
+            return {
+                "framesThisSecond": self.websocket_frame_stats[stats_key],
+                "connectionAge": round(connection_age, 2)
+            }
+        except Exception as e:
+            logger.debug(f"Error calculating frame stats: {e}")
+            return {"framesThisSecond": 0, "connectionAge": 0}
