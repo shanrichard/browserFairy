@@ -129,7 +129,8 @@ class DataManager:
                 "console.jsonl": "Console logs and exceptions per hostname",
                 "network.jsonl": "Network request monitoring per hostname",
                 "correlations.jsonl": "Cross-layer correlation analysis per hostname",
-                "storage_global.jsonl": "Storage quota data for all origins"
+                "storage_global.jsonl": "Storage quota data for all origins",
+                "gc.jsonl": "Garbage collection events per hostname"
             }
         }
         
@@ -230,3 +231,10 @@ class DataManager:
             return
         file_path = f"{hostname}/correlations.jsonl"
         await self.data_writer.append_jsonl(file_path, correlation_data)
+    
+    async def write_gc_data(self, hostname: str, gc_data: Dict[str, Any]) -> None:
+        """GC event data writing (new method for GC monitoring)."""
+        if not self.running:
+            return
+        file_path = f"{hostname}/gc.jsonl"
+        await self.data_writer.append_jsonl(file_path, gc_data)

@@ -56,17 +56,20 @@ class TestMemoryCollector:
         """Test successful target attachment."""
         mock_connector.call.side_effect = [
             {"sessionId": "session123"},  # Target.attachToTarget response
-            {}  # Performance.enable response (optional)
+            {},  # Performance.enable response (optional)
+            {}   # Debugger.enable response (new)
         ]
         
         collector = MemoryCollector(mock_connector, "target123", "example.com")
         await collector.attach()
         
-        # Verify attach call was made first
-        assert mock_connector.call.call_args_list[0] == (
-            ("Target.attachToTarget", {"targetId": "target123", "flatten": True}), {}
-        )
+        # Verify Target.attachToTarget call was made correctly
+        target_attach_call = mock_connector.call.call_args_list[0]
+        assert target_attach_call[0] == ("Target.attachToTarget", {"targetId": "target123", "flatten": True})
+        assert target_attach_call[1].get("timeout") == 20.0
+        
         assert collector.session_id == "session123"
+        assert collector._event_listener_analysis_enabled is True
     
     @pytest.mark.asyncio
     async def test_attach_failure(self, mock_connector):

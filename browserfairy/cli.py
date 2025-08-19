@@ -432,6 +432,8 @@ async def comprehensive_data_callback(data_manager, data: dict):
             await data_manager.write_storage_event(hostname, data)
         elif data_type == "correlation":
             await data_manager.write_correlation_data(hostname, data)
+        elif data_type == "gc_event":
+            await data_manager.write_gc_data(hostname, data)
         else:
             logger.warning(f"Unknown data type for routing: {data_type}")
             
@@ -506,8 +508,11 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
                 collector.collection_task = asyncio.create_task(collector.start_collection())
                 
                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] TAB_CREATED: {hostname} - Comprehensive monitoring started ({target_id[:8]})")
-                # After attach, trigger page-level estimate immediately
+                # Update initial page info and trigger page-level estimate immediately
                 try:
+                    url = payload.get("url", "")
+                    title = payload.get("title", "")
+                    collector.update_page_info(url, title)
                     origin = data_manager._extract_origin_from_url(url) if url else None
                     await data_manager.trigger_page_estimate(collector.session_id, origin, hostname)
                 except Exception:
@@ -604,7 +609,7 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
         
         print(f"✓ Comprehensive monitoring {memory_monitor.get_collector_count()} tabs")
         print(f"✓ Data directory: {data_manager.data_dir}")
-        print("✓ Monitoring: Memory + Console + Network + Correlations")
+        print("✓ Monitoring: Memory + Console + Network + GC + Correlations")
         
         # Run monitoring - support daemon mode exit_event
         if duration:

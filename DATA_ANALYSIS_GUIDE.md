@@ -203,7 +203,7 @@ BrowserFairy 生成的监控数据采用 **JSONL格式**（JSON Lines），每�
 }
 ```
 
-#### 2.5 WebSocket监控事件（新增）
+#### 2.5 WebSocket监控事件
 
 **重要**：WebSocket事件也记录在 network.jsonl 文件中，与HTTP请求数据共存。
 

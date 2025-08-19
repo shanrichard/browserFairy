@@ -4,8 +4,9 @@ import asyncio
 import json
 import logging
 import random
+from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..core.connector import ChromeConnector, ChromeConnectionError
 from ..utils.event_id import make_event_id
@@ -56,6 +57,12 @@ class MemoryCollector:
         self.event_consumer_task: Optional[asyncio.Task] = None
         self.consumer_running = False  # Independent lifecycle for event consumer
         
+        # Event listener analysis related state
+        self._event_listener_analysis_enabled = False
+        self._last_listener_count = 0
+        self._script_url_cache = {}  # scriptId -> url mapping
+        self._detailed_analysis_task: Optional[asyncio.Task] = None  # Async analysis task tracking
+        
     async def attach(self) -> None:
         """Establish Target-level session with retries and sane timeouts."""
         try:
@@ -89,6 +96,21 @@ class MemoryCollector:
                 # Failure is acceptable; proceed without explicit enable
                 pass
 
+            # Enable event listener analysis domains
+            try:
+                # Always enable Debugger domain and listen to scriptParsed (low cost)
+                await self.connector.call(
+                    "Debugger.enable", 
+                    session_id=self.session_id, 
+                    timeout=10.0
+                )
+                self.connector.on_event("Debugger.scriptParsed", self._on_script_parsed)
+                self._event_listener_analysis_enabled = True
+                logger.debug("Event listener analysis enabled")
+            except Exception as e:
+                logger.debug(f"Failed to enable event listener analysis: {e}")
+                self._event_listener_analysis_enabled = False
+
             logger.debug(f"Attached to target {self.target_id} with session {self.session_id}")
 
             # Enable comprehensive monitoring if requested
@@ -105,6 +127,22 @@ class MemoryCollector:
         except Exception as e:
             raise ChromeConnectionError(f"Failed to attach to target {self.target_id}: {e}")
     
+    async def _on_script_parsed(self, params: dict) -> None:
+        """Listen to Debugger.scriptParsed events to maintain scriptId->URL mapping."""
+        if params.get("sessionId") != self.session_id:
+            return
+            
+        script_id = params.get("scriptId")
+        url = params.get("url")
+        if script_id and url:
+            # Maintain lightweight LRU cache, max 1000 scripts
+            if len(self._script_url_cache) >= 1000:
+                # Simple FIFO cleanup strategy
+                oldest_key = next(iter(self._script_url_cache))
+                del self._script_url_cache[oldest_key]
+            
+            self._script_url_cache[script_id] = url
+    
     async def detach(self) -> None:
         """Clean up Target session."""
         # Stop event consumer first
@@ -119,6 +157,21 @@ class MemoryCollector:
                 except asyncio.CancelledError:
                     pass
             
+        # Clean up event listener analysis related resources
+        if self._event_listener_analysis_enabled:
+            try:
+                self.connector.off_event("Debugger.scriptParsed", self._on_script_parsed)
+            except Exception as e:
+                logger.debug(f"Error cleaning up script parsed event: {e}")
+            
+            # Cancel detailed analysis task if running
+            if self._detailed_analysis_task and not self._detailed_analysis_task.done():
+                self._detailed_analysis_task.cancel()
+                try:
+                    await self._detailed_analysis_task
+                except asyncio.CancelledError:
+                    pass
+
         if self.session_id:
             try:
                 await self.connector.call(
@@ -207,6 +260,17 @@ class MemoryCollector:
                 "scriptDuration": extracted["ScriptDuration"]
             }
         }
+        
+        # 5. Event listener detailed analysis (optional, does not affect existing data)
+        try:
+            current_listener_count = extracted["JSEventListeners"] or 0
+            listeners_analysis = await self._analyze_event_listeners(current_listener_count)
+            if listeners_analysis:
+                record["eventListenersAnalysis"] = listeners_analysis
+        except Exception as e:
+            logger.warning(f"Event listener analysis failed: {e}")
+            # Failure does not affect main data collection
+        
         # Add lightweight event_id for deduplication
         record["event_id"] = make_event_id(
             "memory",
@@ -217,6 +281,299 @@ class MemoryCollector:
             record.get("url", "")
         )
         return record
+    
+    async def _analyze_event_listeners(self, current_count: int) -> Optional[Dict[str, Any]]:
+        """Analyze event listener details, execute detailed analysis only on abnormal growth."""
+        if not self._event_listener_analysis_enabled:
+            return None
+            
+        # 1. Calculate growth delta
+        growth_delta = current_count - self._last_listener_count
+        self._last_listener_count = current_count
+        
+        # 2. Lightweight statistics (always execute)
+        try:
+            basic_stats = await self._get_basic_listener_stats(current_count)
+        except Exception as e:
+            logger.debug(f"Basic listener stats failed: {e}")
+            return None
+        
+        # 3. Check if detailed analysis is needed (MVP version: simple threshold)
+        analysis_result = {
+            "summary": basic_stats,
+            "growthDelta": growth_delta,
+            "analysisTriggered": False
+        }
+        
+        if growth_delta > 20:  # Growth threshold
+            # Asynchronously start detailed analysis to avoid blocking sampling cycle
+            if not self._detailed_analysis_task or self._detailed_analysis_task.done():
+                self._detailed_analysis_task = asyncio.create_task(
+                    self._async_detailed_analysis(current_count, basic_stats)
+                )
+            analysis_result["analysisTriggered"] = True
+            
+        return analysis_result
+    
+    async def _get_basic_listener_stats(self, total_from_metrics: int) -> Dict[str, Any]:
+        """Get basic listener statistics."""
+        # Create dedicated objectGroup to avoid memory leaks
+        object_group = f"listener_analysis_{int(datetime.now().timestamp())}"
+        
+        try:
+            # Get document and window objectIds
+            doc_result = await self.connector.call(
+                "Runtime.evaluate",
+                {"expression": "document", "objectGroup": object_group},
+                session_id=self.session_id
+            )
+            win_result = await self.connector.call(
+                "Runtime.evaluate",
+                {"expression": "window", "objectGroup": object_group},
+                session_id=self.session_id
+            )
+            
+            # Get detailed listener information
+            doc_listeners_response = await self.connector.call(
+                "DOMDebugger.getEventListeners",
+                {"objectId": doc_result["result"]["objectId"]},
+                session_id=self.session_id
+            )
+            win_listeners_response = await self.connector.call(
+                "DOMDebugger.getEventListeners",
+                {"objectId": win_result["result"]["objectId"]},
+                session_id=self.session_id
+            )
+            
+            # Correctly access listeners array
+            doc_listeners = doc_listeners_response.get("listeners", [])
+            win_listeners = win_listeners_response.get("listeners", [])
+            
+            # Lightweight estimation: elements_total ≈ (JSEventListeners - document - window)
+            elements_total = max(0, total_from_metrics - len(doc_listeners) - len(win_listeners))
+            
+            return {
+                "total": len(doc_listeners) + len(win_listeners) + elements_total,
+                "byTarget": {
+                    "document": len(doc_listeners),
+                    "window": len(win_listeners),
+                    "elements": elements_total
+                },
+                "byType": self._group_listeners_by_type(doc_listeners + win_listeners)
+            }
+            
+        finally:
+            # Release objectGroup to avoid memory leaks
+            try:
+                await self.connector.call(
+                    "Runtime.releaseObjectGroup",
+                    {"objectGroup": object_group},
+                    session_id=self.session_id
+                )
+            except Exception:
+                pass
+    
+    def _group_listeners_by_type(self, listeners: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Group listeners by event type."""
+        type_counts = defaultdict(int)
+        for listener in listeners:
+            event_type = listener.get("type", "unknown")
+            type_counts[event_type] += 1
+        return dict(type_counts)
+    
+    async def _async_detailed_analysis(self, current_count: int, basic_stats: dict) -> None:
+        """Execute detailed analysis asynchronously to avoid blocking memory sampling cycle."""
+        try:
+            # Enable DOMDebugger domain only when needed
+            await self.connector.call(
+                "DOMDebugger.enable", 
+                session_id=self.session_id, 
+                timeout=10.0
+            )
+            
+            # Execute detailed analysis with timeout control
+            detailed_sources = await asyncio.wait_for(
+                self._perform_detailed_listener_analysis(), timeout=3.0
+            )
+            
+            # Build complete analysis result and send through data_callback
+            if detailed_sources and self.data_callback:
+                analysis_result = {
+                    "type": "memory",  # Still as extension of memory event
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "hostname": self.hostname,
+                    "targetId": self.target_id,
+                    "sessionId": self.session_id,
+                    "eventListenersAnalysis": {
+                        "summary": basic_stats,
+                        "growthDelta": current_count - self._last_listener_count,
+                        "analysisTriggered": True,
+                        "detailedSources": detailed_sources
+                    }
+                }
+                
+                if asyncio.iscoroutinefunction(self.data_callback):
+                    await self.data_callback(analysis_result)
+                else:
+                    self.data_callback(analysis_result)
+                    
+        except asyncio.TimeoutError:
+            logger.warning("Detailed event listener analysis timeout (3s)")
+        except Exception as e:
+            logger.warning(f"Detailed event listener analysis failed: {e}")
+        finally:
+            # Optional: disable DOMDebugger domain to reduce event noise
+            try:
+                await self.connector.call(
+                    "DOMDebugger.disable", 
+                    session_id=self.session_id
+                )
+            except Exception:
+                pass
+    
+    async def _perform_detailed_listener_analysis(self) -> List[Dict[str, Any]]:
+        """Detailed listener source analysis - limited candidate sampling to avoid full page scanning."""
+        object_group = f"detailed_analysis_{int(datetime.now().timestamp())}"
+        
+        try:
+            # 1. Limited candidate set: avoid full page search, focus on common leak scenarios
+            candidate_selectors = [
+                "body",  # Page body
+                "[role=button]", "button",  # Button elements
+                "a[href]",  # Links
+                "input", "select", "textarea",  # Form elements
+                ".modal", ".dialog", ".popup",  # Modal components
+                ".chart-container", ".visualization"  # Visualization components
+            ]
+            
+            candidate_elements = []
+            
+            # Get first 100 elements of each type, total ≤800 candidates
+            for selector in candidate_selectors:
+                try:
+                    elements_result = await self.connector.call(
+                        "Runtime.evaluate",
+                        {
+                            "expression": f"Array.from(document.querySelectorAll('{selector}')).slice(0, 100)",
+                            "objectGroup": object_group
+                        },
+                        session_id=self.session_id
+                    )
+                    if elements_result.get("result", {}).get("objectId"):
+                        candidate_elements.append(elements_result["result"]["objectId"])
+                except Exception:
+                    continue  # Skip failed selectors
+            
+            # 2. Aggregate listeners by source (scriptId+lineNumber)
+            sources = defaultdict(lambda: {
+                "elementCount": 0,
+                "eventTypes": set(),
+                "functionName": "",
+                "scriptId": "",
+                "lineNumber": 0
+            })
+            
+            # Analyze candidate elements' listeners
+            for element_array_id in candidate_elements[:300]:  # Limit to max 300 array objects
+                try:
+                    # Get listeners for each element in the array
+                    array_length_result = await self.connector.call(
+                        "Runtime.getProperties",
+                        {"objectId": element_array_id},
+                        session_id=self.session_id
+                    )
+                    
+                    properties = array_length_result.get("result", [])
+                    for prop in properties:
+                        if prop.get("name", "").isdigit():  # Array index
+                            element_id = prop.get("value", {}).get("objectId")
+                            if not element_id:
+                                continue
+                                
+                            listeners_response = await self.connector.call(
+                                "DOMDebugger.getEventListeners",
+                                {"objectId": element_id},
+                                session_id=self.session_id
+                            )
+                            
+                            for listener in listeners_response.get("listeners", []):
+                                location = listener.get("location", {})
+                                script_id = location.get("scriptId")
+                                line_number = location.get("lineNumber")
+                                
+                                if script_id and line_number:
+                                    source_key = f"{script_id}:{line_number}"
+                                    source_data = sources[source_key]
+                                    
+                                    source_data["elementCount"] += 1
+                                    source_data["eventTypes"].add(listener.get("type", "unknown"))
+                                    source_data["scriptId"] = script_id
+                                    source_data["lineNumber"] = line_number
+                                    source_data["functionName"] = self._extract_function_name(
+                                        listener.get("handler", {}).get("description", "")
+                                    )
+                                    
+                except Exception as e:
+                    logger.debug(f"Failed to analyze element array: {e}")
+                    continue
+            
+            # 3. Use cached URL mapping, avoid incorrect getScriptSource calls
+            result = []
+            for source_key, data in sources.items():
+                if data["elementCount"] > 1:  # Only focus on functions bound to multiple elements
+                    script_id = data["scriptId"]
+                    source_file = self._script_url_cache.get(script_id, f"script://{script_id}")
+                    
+                    result.append({
+                        "sourceFile": source_file,
+                        "lineNumber": data["lineNumber"],
+                        "functionName": data["functionName"][:100],  # Truncate function name
+                        "elementCount": data["elementCount"],
+                        "eventTypes": list(data["eventTypes"])[:5],  # Limit event types count
+                        "suspicion": "high" if data["elementCount"] > 10 else "medium",
+                        "scriptId": script_id  # Keep for debugging
+                    })
+            
+            # Sort by element binding count, return top 10 most suspicious sources
+            return sorted(result, key=lambda x: x["elementCount"], reverse=True)[:10]
+            
+        finally:
+            # Release all analysis objects
+            try:
+                await self.connector.call(
+                    "Runtime.releaseObjectGroup",
+                    {"objectGroup": object_group},
+                    session_id=self.session_id
+                )
+            except Exception:
+                pass
+    
+    def _extract_function_name(self, description: str) -> str:
+        """Extract function name from handler description."""
+        if not description:
+            return "anonymous"
+        
+        # Try to extract function name from description like "function handleClick() { [code] }"
+        description = description.strip()
+        if description.startswith("function "):
+            # Extract name between "function " and "("
+            start_idx = 9  # len("function ")
+            end_idx = description.find("(", start_idx)
+            if end_idx > start_idx:
+                name = description[start_idx:end_idx].strip()
+                if name:
+                    return name
+        elif description.startswith("async function "):
+            # Handle async functions
+            start_idx = 15  # len("async function ")
+            end_idx = description.find("(", start_idx)
+            if end_idx > start_idx:
+                name = description[start_idx:end_idx].strip()
+                if name:
+                    return name
+        
+        # If extraction fails, return truncated description
+        return description[:50]
     
     async def start_collection(self, interval: float = 5.0) -> None:
         """Start periodic memory collection."""

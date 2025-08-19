@@ -6,6 +6,8 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Optional, Callable
 
+from ..utils.event_id import make_event_id
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,10 +40,12 @@ class SimpleCorrelationEngine:
         
         # If correlations found, generate report
         if correlations:
+            timestamp = datetime.now(timezone.utc).isoformat()
+            hostname = event_data.get("hostname", "unknown")
             correlation_report = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": timestamp,
                 "type": "correlation",
-                "hostname": event_data.get("hostname", "unknown"),
+                "hostname": hostname,
                 "primary_event": {
                     "type": event_data.get("type", "unknown"),
                     "timestamp": event_data.get("timestamp", "")
@@ -50,6 +54,21 @@ class SimpleCorrelationEngine:
                 "severity": self._determine_severity(correlations),
                 "evidence": "Time window correlation detected"
             }
+            
+            # Add event_id for deduplication
+            try:
+                # Use primary event type, timestamp, and correlation types for uniqueness
+                correlation_types = "|".join(c.get("type", "") for c in correlations[:2])
+                correlation_report["event_id"] = make_event_id(
+                    "correlation",
+                    hostname,
+                    timestamp,
+                    event_data.get("type", "unknown"),
+                    correlation_types,
+                    len(correlations)
+                )
+            except Exception:
+                pass  # Continue without event_id if generation fails
             
             # Status callback
             if self.status_callback:
