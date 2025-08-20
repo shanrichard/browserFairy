@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
 import logging
+from datetime import datetime
 
 # Try to load .env file if it exists (for API Key configuration)
 try:
@@ -343,15 +344,50 @@ class PerformanceAnalyzer:
             print(f"\n开始AI分析 (焦点: {focus})...")
             print("=" * 50)
             
+            # Prepare to collect analysis results
+            analysis_results = []
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
             # Execute query and stream results
             async for message in query(prompt=full_prompt, options=options):
                 if hasattr(message, 'result'):
                     print(message.result)
+                    analysis_results.append(message.result)
                 elif hasattr(message, 'text'):
                     print(message.text)
+                    analysis_results.append(message.text)
             
             print("\n" + "=" * 50)
-            print("AI分析完成")
+            
+            # Save analysis report to file
+            if analysis_results:
+                report_filename = f"ai_analysis_{focus}_{timestamp}.md"
+                report_path = self.session_dir / report_filename
+                
+                # Create markdown report
+                report_content = f"""# BrowserFairy AI Analysis Report
+
+**生成时间**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}  
+**分析焦点**: {focus}  
+**数据目录**: {self.session_dir}
+
+---
+
+## 分析结果
+
+{"".join(analysis_results)}
+
+---
+
+*此报告由BrowserFairy AI分析功能自动生成*
+"""
+                
+                # Write report to file
+                report_path.write_text(report_content, encoding='utf-8')
+                print(f"AI分析报告已保存: {report_path}")
+            else:
+                print("AI分析完成（无输出结果）")
+            
             return True
             
         except Exception as e:

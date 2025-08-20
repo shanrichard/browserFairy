@@ -143,6 +143,7 @@ browserfairy --analyze-with-ai --focus performance # 性能瓶颈分析
 - **性能瓶颈诊断**：分析长任务、GC频率、主线程阻塞
 - **错误根因分析**：结合Source Maps定位真实代码位置
 - **网络优化建议**：API响应时间分析、失败率统计、优化建议
+- **自动生成报告**：分析结果保存为Markdown文件（`ai_analysis_[focus]_[timestamp].md`）
 
 详细配置和使用说明请查看 [AI智能分析指南](./docs/AI_ANALYSIS_GUIDE.md)
 

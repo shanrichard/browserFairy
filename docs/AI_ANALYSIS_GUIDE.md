@@ -169,6 +169,30 @@ python -m browserfairy --analyze-with-ai --custom-prompt "只分析最近1小时
 - `network` - 网络性能分析
 - `errors` - 错误和异常分析
 
+### 分析报告
+
+AI分析完成后会自动生成Markdown格式的分析报告：
+
+**报告文件**：
+- 文件名：`ai_analysis_[focus]_[timestamp].md`
+- 保存位置：与监控数据相同的session目录
+- 示例：`~/BrowserFairyData/session_2025-08-20_143022/ai_analysis_memory_leak_20250820_143055.md`
+
+**报告内容**：
+- 生成时间和分析参数
+- 完整的分析结果
+- 问题诊断和优化建议
+- 源代码级的问题定位（如果有）
+
+**查看报告**：
+```bash
+# 分析完成后会显示报告路径
+AI分析报告已保存: /Users/xxx/BrowserFairyData/session_2025-08-20_143022/ai_analysis_general_20250820_143055.md
+
+# 直接查看报告
+cat ~/BrowserFairyData/session_*/ai_analysis_*.md
+```
+
 ## 分析模式详解
 
 ### 1. 综合分析（general）
