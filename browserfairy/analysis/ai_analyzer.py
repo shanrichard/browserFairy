@@ -1,12 +1,14 @@
 """AI-powered performance analyzer using Claude Code SDK."""
 
 import os
+import sys
 import asyncio
 import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
 import logging
 from datetime import datetime
+import time
 
 # Try to load .env file if it exists (for API Key configuration)
 try:
@@ -340,24 +342,99 @@ class PerformanceAnalyzer:
             allowed_tools=["Read", "Write", "Bash", "Grep"]
         )
         
+        print("🔧 准备AI分析环境...")
+        print(f"   • 数据目录: {self.session_dir}")
+        print(f"   • 分析焦点: {focus}")
+        print(f"   • Node.js: {self.node_version}")
+        print("   • 可用工具: Read, Write, Bash, Grep")
+        
         try:
             print(f"\n开始AI分析 (焦点: {focus})...")
             print("=" * 50)
+            print("🤖 Claude 正在分析数据，请稍候...\n")
             
             # Prepare to collect analysis results
             analysis_results = []
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            message_count = 0
+            start_time = time.time()
+            last_output_time = start_time
             
-            # Execute query and stream results
+            # Execute query and stream results with improved output handling
             async for message in query(prompt=full_prompt, options=options):
+                message_count += 1
+                
+                # Try different message attributes that Claude SDK might use
+                content = None
                 if hasattr(message, 'result'):
-                    print(message.result)
-                    analysis_results.append(message.result)
+                    content = message.result
                 elif hasattr(message, 'text'):
-                    print(message.text)
-                    analysis_results.append(message.text)
+                    content = message.text
+                elif hasattr(message, 'content'):
+                    content = message.content
+                elif hasattr(message, 'data'):
+                    content = message.data
+                else:
+                    # Debug: print message structure for the first few messages
+                    if message_count <= 3:
+                        print(f"🔍 调试信息 - 消息结构: {type(message)} - 属性: {[attr for attr in dir(message) if not attr.startswith('_')]}")
+                    content = str(message)  # Fallback to string representation
+                
+                # Handle different content types
+                if content:
+                    display_content = None
+                    
+                    if isinstance(content, dict):
+                        # Handle dictionary content - extract text from common fields
+                        if 'text' in content:
+                            display_content = content['text']
+                        elif 'content' in content:
+                            display_content = content['content']
+                        elif 'message' in content:
+                            display_content = content['message']
+                        elif 'result' in content:
+                            display_content = content['result']
+                        else:
+                            # If no common text field, convert to string representation
+                            display_content = str(content)
+                    elif isinstance(content, str):
+                        display_content = content
+                    else:
+                        # Convert other types to string
+                        display_content = str(content)
+                    
+                    # Check if we have meaningful content to display
+                    if display_content and display_content.strip():
+                        # Ensure immediate output by flushing stdout
+                        print(display_content, end='', flush=True)
+                        analysis_results.append(display_content)
+                        last_output_time = time.time()
+                    else:
+                        # Show progress indicator for empty/whitespace-only content
+                        current_time = time.time()
+                        if current_time - last_output_time > 10:  # No output for 10 seconds
+                            elapsed = int(current_time - start_time)
+                            print(f"\n[{elapsed}s] 🔄 分析进行中...", end='', flush=True)
+                            last_output_time = current_time
+                        else:
+                            print(".", end='', flush=True)
+                else:
+                    # Show progress indicator for None/empty messages
+                    current_time = time.time()
+                    if current_time - last_output_time > 10:  # No output for 10 seconds
+                        elapsed = int(current_time - start_time)
+                        print(f"\n[{elapsed}s] 🔄 分析进行中...", end='', flush=True)
+                        last_output_time = current_time
+                    else:
+                        print(".", end='', flush=True)
+                
+                # Allow other tasks to run
+                await asyncio.sleep(0)
             
+            # Final statistics
+            total_time = int(time.time() - start_time)
             print("\n" + "=" * 50)
+            print(f"✅ 分析完成 - 耗时: {total_time}s - 消息数: {message_count}")
             
             # Save analysis report to file
             if analysis_results:
@@ -369,7 +446,9 @@ class PerformanceAnalyzer:
 
 **生成时间**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}  
 **分析焦点**: {focus}  
-**数据目录**: {self.session_dir}
+**数据目录**: {self.session_dir}  
+**分析耗时**: {total_time}秒  
+**处理消息**: {message_count}条
 
 ---
 
@@ -384,9 +463,13 @@ class PerformanceAnalyzer:
                 
                 # Write report to file
                 report_path.write_text(report_content, encoding='utf-8')
-                print(f"AI分析报告已保存: {report_path}")
+                print(f"📄 AI分析报告已保存: {report_path}")
             else:
-                print("AI分析完成（无输出结果）")
+                print("⚠️  AI分析完成但无输出结果")
+                print("   这可能是因为:")
+                print("   1. 数据目录为空或无有效监控数据")
+                print("   2. API调用出现问题")  
+                print("   3. 提示词需要调整")
             
             return True
             
