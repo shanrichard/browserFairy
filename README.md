@@ -5,7 +5,7 @@
 ## 📚 文档导航
 
 - 🚀 [快速开始指南](./docs/zh-CN/getting-started.md) - 详细安装和配置
-- 🤖 [AI辅助调试](./docs/zh-CN/ai-debugging.md) - Claude/Cursor集成最佳实践
+- 🤖 [AI辅助调试](./docs/zh-CN/ai-debugging.md) - Claude Code/Cursor集成最佳实践
 - 📊 [数据分析指南](./docs/zh-CN/data-analysis.md) - 理解监控数据格式
 - ⚡ [功能特性](./docs/zh-CN/features.md) - 完整功能列表
 - 🔧 [命令参考](./docs/zh-CN/commands.md) - 所有命令详解
@@ -13,7 +13,7 @@
 
 ---
 
-**一句话介绍**：BrowserFairy让Claude/Cursor等AI编程助手能够"看见"浏览器里发生的一切，将调试从"盲猜"变为"精准定位"。
+**一句话介绍**：BrowserFairy让Claude Code/Cursor等AI编程助手能够"看见"浏览器里发生的一切，将调试从"盲猜"变为"精准定位"。
 
 ## 🎯 解决什么问题？
 
@@ -21,9 +21,9 @@
 
 ```
 你："页面点击按钮没反应"
-Claude："试试添加console.log看看..."
+Claude Code："试试添加console.log看看..."
 你："还是不行"
-Claude："可能是事件绑定问题，检查一下..."
+Claude Code："可能是事件绑定问题，检查一下..."
 （20分钟后还在猜测...）
 ```
 
@@ -31,7 +31,7 @@ Claude："可能是事件绑定问题，检查一下..."
 
 ```
 你："页面点击按钮没反应"
-Claude："我看到了TypeError在Button.jsx第45行，是因为state.user为null，这里需要加个空值检查"
+Claude Code："我看到了TypeError在Button.jsx第45行，是因为state.user为null，这里需要加个空值检查"
 （2分钟修复完成）
 ```
 
@@ -120,9 +120,9 @@ BrowserFairy专注于**运行时性能监控**，与测试工具形成完美互�
 ### 开发工具链中的定位
 
 ```
-编写代码（Cursor/Claude） → 测试（Playwright/Cypress） → 部署 → 监控（BrowserFairy）
-                                                              ↓
-                                                      发现问题 → AI分析 → 修复
+编写代码（Cursor/Claude Code） → 测试（Playwright/Cypress） → 部署 → 监控（BrowserFairy）
+                                                                  ↓
+                                                          发现问题 → AI分析 → 修复
 ```
 
 ### 独特价值

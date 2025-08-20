@@ -79,7 +79,7 @@ browserfairy --start-monitoring
 
 ### AI调试模式
 
-如果你想配合Claude/Cursor使用：
+如果你想配合Claude Code/Cursor使用：
 
 ```bash
 # 只收集错误，保存到当前目录

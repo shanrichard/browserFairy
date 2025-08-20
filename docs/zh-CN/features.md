@@ -267,7 +267,7 @@ ProductList.jsx:156 - handleProductClick
 - 故障排查
 
 ### AI协作
-- Claude调试
+- Claude Code调试
 - Cursor集成
 - Copilot辅助
 - 自动化分析
