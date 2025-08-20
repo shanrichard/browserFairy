@@ -57,6 +57,23 @@ ProductList.jsx:156 - handleProductClick
 - 错误堆栈追踪
 - 源文件定位
 
+**Source Map解析** ⭐ 🆕
+- 自动检测JavaScript Source Map
+- 将压缩代码错误映射到源代码
+- 恢复原始函数名和文件路径
+- 支持data URL和HTTP Source Map
+
+示例对比：
+```
+未启用Source Map：
+错误位置：bundle.min.js:1:45678
+函数名：a
+
+启用Source Map后：
+错误位置：src/components/Form.jsx:42:15
+函数名：handleSubmit
+```
+
 **异常检测**
 - 未捕获异常
 - Promise拒绝

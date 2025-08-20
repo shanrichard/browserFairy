@@ -66,15 +66,30 @@ session_2025-01-20_143022/          # 监控会话
 **错误和异常**：
 ```json
 {
-  "type": "console",
-  "level": "error",
+  "type": "exception",
   "message": "TypeError: Cannot read property 'value' of null",
   "source": {
-    "url": "https://example.com/app.js",
-    "line": 234,
-    "column": 15
+    "url": "https://example.com/bundle.min.js",
+    "line": 1,
+    "column": 45678
   },
-  "stackTrace": [...]
+  "stackTrace": [
+    {
+      "function": "handleSubmit",
+      "url": "https://example.com/bundle.min.js",
+      "line": 1,
+      "column": 45678,
+      "scriptId": "123",
+      "lineNumber": 1,
+      "columnNumber": 45678,
+      "original": {  // 🆕 Source Map解析结果（需启用--enable-source-map）
+        "file": "src/components/Form.jsx",
+        "line": 42,
+        "column": 15,
+        "name": "handleSubmit"
+      }
+    }
+  ]
 }
 ```
 
@@ -247,19 +262,33 @@ for item in data:
                 print(f"泄漏源: {source['sourceFile']}:{source['lineNumber']}")
 ```
 
-### 2. 分析错误模式
+### 2. 分析错误模式（含Source Map）
 
 ```python
 from collections import Counter
 
-# 统计最频繁的错误
+# 统计最频繁的错误（使用Source Map定位源代码）
 errors = []
 with open('console.jsonl', 'r') as f:
     for line in f:
         data = json.loads(line)
-        if data.get('level') == 'error':
-            errors.append(data['message'][:50])
+        if data.get('type') == 'exception':
+            # 优先使用Source Map解析后的位置
+            if data.get('stackTrace'):
+                frame = data['stackTrace'][0]
+                if 'original' in frame:
+                    # 有Source Map数据，使用原始位置
+                    location = f"{frame['original']['file']}:{frame['original']['line']}"
+                    func = frame['original'].get('name', frame['function'])
+                else:
+                    # 没有Source Map，使用压缩代码位置
+                    location = f"{frame['url']}:{frame['line']}"
+                    func = frame['function']
+                
+                error_info = f"{data['message'][:30]} at {func} ({location})"
+                errors.append(error_info)
 
+# 显示错误频率
 for error, count in Counter(errors).most_common(5):
     print(f"{count}次: {error}")
 ```
@@ -278,7 +307,53 @@ with open('network.jsonl', 'r') as f:
             print(f"调用者: {frame['functionName']} at line {frame['lineNumber']}")
 ```
 
-### 4. 分析内存分配热点 🆕
+### 4. Source Map数据使用 🆕
+
+```python
+# 分析启用Source Map后的错误数据
+def analyze_with_source_map(filename='console.jsonl'):
+    errors_by_source = {}
+    
+    with open(filename, 'r') as f:
+        for line in f:
+            data = json.loads(line)
+            if data.get('type') == 'exception' and data.get('stackTrace'):
+                for frame in data['stackTrace']:
+                    if 'original' in frame:
+                        # 使用Source Map解析后的数据
+                        source_file = frame['original']['file']
+                        source_line = frame['original']['line']
+                        func_name = frame['original'].get('name', 'anonymous')
+                        
+                        key = f"{source_file}:{source_line}"
+                        if key not in errors_by_source:
+                            errors_by_source[key] = {
+                                'file': source_file,
+                                'line': source_line,
+                                'function': func_name,
+                                'errors': []
+                            }
+                        errors_by_source[key]['errors'].append(data['message'])
+    
+    # 按错误数量排序
+    sorted_errors = sorted(errors_by_source.items(), 
+                          key=lambda x: len(x[1]['errors']), 
+                          reverse=True)
+    
+    print("源代码错误热点（按错误频率排序）：")
+    for key, info in sorted_errors[:10]:
+        print(f"\n{info['file']}:{info['line']} ({info['function']})")
+        print(f"  错误次数: {len(info['errors'])}")
+        print(f"  示例错误: {info['errors'][0][:50]}")
+```
+
+**Source Map数据的价值**：
+- **精确定位**：直接看到`Form.jsx:42`而不是`bundle.min.js:1:45678`
+- **函数名恢复**：看到原始函数名而不是混淆后的名称
+- **AI友好**：AI可以直接理解源代码位置，给出精确修复建议
+- **调试效率**：减少从压缩代码反推源码的时间
+
+### 5. 分析内存分配热点
 
 ```python
 # 分析HeapProfiler采样数据，找出内存分配热点

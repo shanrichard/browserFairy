@@ -19,6 +19,7 @@ browserfairy --start-monitoring [选项]
 - `--duration <秒>` - 监控持续时间
 - `--output <模式>` - 输出过滤（见下文）
 - `--data-dir <路径>` - 数据保存目录
+- `--enable-source-map` - 启用Source Map解析（将压缩代码错误映射到源代码）
 
 **示例**：
 ```bash
@@ -28,8 +29,8 @@ browserfairy --start-monitoring --duration 300
 # 后台运行
 browserfairy --start-monitoring --daemon
 
-# AI调试模式
-browserfairy --start-monitoring --output errors-only --data-dir .
+# AI调试模式（推荐启用Source Map）
+browserfairy --start-monitoring --output errors-only --enable-source-map --data-dir .
 ```
 
 ### 手动连接监控
@@ -179,6 +180,44 @@ browserfairy --snapshot-storage-once --snapshot-hostname example.com
 # 限制敏感数据长度
 browserfairy --snapshot-storage-once --snapshot-maxlen 100
 ```
+
+## Source Map支持
+
+### 启用Source Map解析
+
+```bash
+# 在任何监控命令中添加 --enable-source-map
+browserfairy --monitor-comprehensive --enable-source-map
+browserfairy --start-monitoring --enable-source-map
+```
+
+**功能说明**：
+- 自动检测JavaScript文件的Source Map
+- 将压缩代码错误位置映射到源代码
+- 在错误堆栈中添加`original`字段
+
+**输出示例**：
+```json
+{
+  "stackTrace": [{
+    "function": "handleSubmit",
+    "url": "bundle.min.js",
+    "line": 1,
+    "column": 45678,
+    "original": {
+      "file": "src/components/Form.jsx",
+      "line": 42,
+      "column": 15,
+      "name": "handleSubmit"
+    }
+  }]
+}
+```
+
+**注意事项**：
+- Source Map文件必须可访问（HTTP或data URL）
+- 会稍微增加内存占用（缓存Source Map）
+- 失败时自动降级，保持原始堆栈信息
 
 ## 工具命令
 

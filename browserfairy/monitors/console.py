@@ -15,7 +15,8 @@ class ConsoleMonitor:
     """Console log monitor - per-session filtering with a queue."""
     
     def __init__(self, connector: ChromeConnector, session_id: str,
-                 event_queue: asyncio.Queue, status_callback: Optional[Callable] = None):
+                 event_queue: asyncio.Queue, status_callback: Optional[Callable] = None,
+                 enable_source_map: bool = False):
         self.connector = connector
         # In flattened mode, CDP events include a top-level sessionId injected by connector
         # Keep a strict per-session filter to avoid cross-tab duplication
@@ -24,21 +25,40 @@ class ConsoleMonitor:
         self.status_callback = status_callback
         self.hostname = None
         
+        # Source Map support (v1: disabled by default)
+        self.enable_source_map = enable_source_map
+        self.source_map_resolver = None
+        
     def set_hostname(self, hostname: str):
         """Set hostname for data grouping."""
         self.hostname = hostname
         
     async def start_monitoring(self) -> None:
-        """Start Console event listening."""
+        """Start Console event listening with optional source map support."""
         logger.debug(f"ConsoleMonitor.start_monitoring: registering handlers for session {self.session_id}")
         self.connector.on_event("Runtime.consoleAPICalled", self._on_console_message)
         self.connector.on_event("Runtime.exceptionThrown", self._on_exception_thrown)
         logger.debug(f"ConsoleMonitor handlers registered")
+        
+        # Initialize Source Map resolver if enabled
+        if self.enable_source_map:
+            try:
+                from ..analysis.source_map import SourceMapResolver
+                self.source_map_resolver = SourceMapResolver(self.connector)
+                await self.source_map_resolver.initialize(self.session_id)
+                logger.debug(f"Source map resolver initialized for session {self.session_id}")
+            except Exception as e:
+                logger.debug(f"Source map resolver initialization failed: {e}")
     
     async def stop_monitoring(self) -> None:
         """Stop Console event listening with paired off_event."""
         self.connector.off_event("Runtime.consoleAPICalled", self._on_console_message)
         self.connector.off_event("Runtime.exceptionThrown", self._on_exception_thrown)
+        
+        # Clean up Source Map resolver if enabled
+        if self.source_map_resolver:
+            await self.source_map_resolver.cleanup()
+            self.source_map_resolver = None
         
     async def _on_console_message(self, params: dict) -> None:
         """Handle console message - pure queue path: filter→limit→construct→enqueue."""
@@ -102,6 +122,17 @@ class ConsoleMonitor:
             "stackTrace": self._format_stack_trace(exception.get("stackTrace", {})),
             "hostname": self.hostname
         }
+        
+        # Apply Source Map resolution if enabled
+        if self.source_map_resolver and exception_data.get("stackTrace"):
+            try:
+                exception_data["stackTrace"] = await self.source_map_resolver.resolve_stack_trace(
+                    exception_data["stackTrace"]
+                )
+            except Exception as e:
+                logger.debug(f"Source map resolution failed: {e}")
+                # Failed: keep original stack trace
+        
         # Add event_id
         exception_data["event_id"] = make_event_id(
             "exception",
@@ -159,16 +190,21 @@ class ConsoleMonitor:
         return {"url": "", "line": 0, "function": "unknown"}
     
     def _format_stack_trace(self, stack: dict) -> list:
-        """Format stack trace information (limit depth to 5 levels)."""
+        """Format stack trace information - preserve backward compatibility, add new fields."""
         if not stack or not stack.get("callFrames"):
             return []
         
         return [
             {
+                # Keep original field names for backward compatibility
                 "function": frame.get("functionName", "anonymous")[:100],
                 "url": frame.get("url", "")[:200],
                 "line": frame.get("lineNumber", 0),
-                "column": frame.get("columnNumber", 0)
+                "column": frame.get("columnNumber", 0),
+                # Add new fields for Source Map resolution
+                "scriptId": frame.get("scriptId"),  # Required for Source Map lookup
+                "lineNumber": frame.get("lineNumber", 0),  # CDP original field
+                "columnNumber": frame.get("columnNumber", 0)  # CDP original field
             }
             for frame in stack["callFrames"][:5]
         ]

@@ -88,7 +88,7 @@ uv run pip install -e .
 
 ```bash
 # AI调试模式（推荐）
-browserfairy --start-monitoring --output errors-only --data-dir .
+browserfairy --start-monitoring --enable-source-map --data-dir .
 
 # 后台持续监控
 browserfairy --start-monitoring --daemon

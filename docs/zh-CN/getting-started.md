@@ -68,7 +68,7 @@ browserfairy --test-connection
 
 ```bash
 # 自动启动Chrome并开始监控
-browserfairy --start-monitoring
+browserfairy --start-monitoring --enable-source-map
 ```
 
 这会：

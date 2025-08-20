@@ -9,12 +9,14 @@
 ### 1. 在项目目录启动监控
 
 ```bash
-# 推荐：只收集错误信息，保存到当前目录
-browserfairy --start-monitoring --output errors-only --data-dir ./debug_data
+# 启用Source Map解析（让AI看到源代码位置）并将监控文件写到当前项目所在的文件夹
+browserfairy --start-monitoring --enable-source-map --data-dir ./debug_data
 
-# 或者收集完整性能数据
-browserfairy --start-monitoring --output performance --data-dir ./debug_data
+# 或者收集完整性能数据（包含Source Map）
+browserfairy --start-monitoring --output performance --enable-source-map --data-dir ./debug_data
 ```
+
+> 💡 **重要提示**：`--enable-source-map` 参数让BrowserFairy自动解析压缩代码的Source Map，将错误定位到原始源代码位置。这对AI调试至关重要！
 
 ### 2. 复现问题
 
@@ -29,12 +31,20 @@ browserfairy --start-monitoring --output performance --data-dir ./debug_data
 ```
 你：Claude Code，我点击提交按钮没反应，debug_data目录有监控数据
 Claude Code：让我看看...发现了问题！在console.jsonl中有个TypeError:
-  - 文件：components/SubmitButton.jsx:45
+  
+  原始错误位置（压缩代码）：
+  - 文件：bundle.min.js:1:45678
+  
+  通过Source Map解析后的真实位置：
+  - 文件：src/components/SubmitButton.jsx:45
+  - 函数：handleSubmit
   - 错误：Cannot read property 'value' of null
-  - 原因：form.username在第45行被访问时为null
+  - 源代码：const username = form.username.value; // 这行出错了
   
 解决方案：在访问前添加空值检查...
 ```
+
+> 🎯 **Source Map的威力**：没有Source Map，AI只能看到`bundle.min.js:1:45678`这种无意义的位置。有了Source Map，AI能精确定位到`SubmitButton.jsx:45`的`handleSubmit`函数！
 
 ## 🔥 实际案例
 
