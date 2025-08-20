@@ -438,6 +438,8 @@ async def comprehensive_data_callback(data_manager, data: dict):
             await data_manager.write_longtask_data(hostname, data)
         elif data_type == "longtask_limitation":
             await data_manager.write_longtask_data(hostname, data)  # 同一文件
+        elif data_type == "heap_sampling":
+            await data_manager.write_heap_sampling_data(hostname, data)
         else:
             logger.warning(f"Unknown data type for routing: {data_type}")
             

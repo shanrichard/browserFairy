@@ -131,7 +131,8 @@ class DataManager:
                 "correlations.jsonl": "Cross-layer correlation analysis per hostname",
                 "storage_global.jsonl": "Storage quota data for all origins",
                 "gc.jsonl": "Garbage collection events per hostname",
-                "longtask.jsonl": "Long task events (>50ms) per hostname"
+                "longtask.jsonl": "Long task events (>50ms) per hostname",
+                "heap_sampling.jsonl": "Heap sampling profiles per hostname"
             }
         }
         
@@ -245,4 +246,11 @@ class DataManager:
         if not self.running:
             return
         file_path = f"{hostname}/longtask.jsonl"
+        await self.data_writer.append_jsonl(file_path, data)
+
+    async def write_heap_sampling_data(self, hostname: str, data: Dict[str, Any]) -> None:
+        """写入heap sampling数据"""
+        if not self.running:
+            return
+        file_path = f"{hostname}/heap_sampling.jsonl"
         await self.data_writer.append_jsonl(file_path, data)

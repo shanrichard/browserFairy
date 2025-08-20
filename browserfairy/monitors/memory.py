@@ -55,6 +55,7 @@ class MemoryCollector:
         self.network_monitor: Optional['NetworkMonitor'] = None
         self.domstorage_monitor: Optional[Any] = None
         self.gc_monitor: Optional[Any] = None  # Initialize gc_monitor attribute
+        self.heap_sampling_monitor: Optional[Any] = None  # Initialize heap_sampling_monitor attribute
         self.correlation_engine: Optional['SimpleCorrelationEngine'] = None
         self.event_consumer_task: Optional[asyncio.Task] = None
         self.consumer_running = False  # Independent lifecycle for event consumer
@@ -636,6 +637,10 @@ class MemoryCollector:
         if self.gc_monitor:
             await self.gc_monitor.stop_monitoring()
         
+        if self.heap_sampling_monitor:
+            await self.heap_sampling_monitor.stop_monitoring()
+            self.heap_sampling_monitor = None
+        
         # Clean up long task monitoring
         if self.longtask_callback_registered:
             try:
@@ -696,6 +701,7 @@ class MemoryCollector:
         from .network import NetworkMonitor
         from .domstorage import DOMStorageMonitor
         from .gc import GCMonitor
+        from .heap_sampling import HeapSamplingMonitor
         from ..analysis.correlation import SimpleCorrelationEngine
         
         self.console_monitor = ConsoleMonitor(
@@ -722,6 +728,16 @@ class MemoryCollector:
             self.event_queue,
             self.status_callback
         )
+        
+        # Initialize heap sampling monitor
+        self.heap_sampling_monitor = HeapSamplingMonitor(
+            self.connector,
+            self.session_id,
+            self.event_queue,
+            self.target_id,
+            self.status_callback
+        )
+        
         self.correlation_engine = SimpleCorrelationEngine(self.status_callback)
         
         # Set hostname for data grouping
@@ -729,12 +745,14 @@ class MemoryCollector:
         self.network_monitor.set_hostname(self.hostname)
         self.domstorage_monitor.set_hostname(self.hostname)
         self.gc_monitor.set_hostname(self.hostname)
+        self.heap_sampling_monitor.set_hostname(self.hostname)
         
         # Start monitoring (use queue mode, not data_callback)
         await self.console_monitor.start_monitoring()
         await self.network_monitor.start_monitoring()
         await self.domstorage_monitor.start_monitoring()
         await self.gc_monitor.start_monitoring()
+        await self.heap_sampling_monitor.start_monitoring()
         
         # Start event consumer with independent lifecycle
         self.consumer_running = True
