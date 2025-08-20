@@ -1,0 +1,330 @@
+# 命令参考手册
+
+## 概述
+
+BrowserFairy提供了丰富的命令行选项，支持不同的监控场景。
+
+## 基础命令
+
+### 一键启动
+
+```bash
+browserfairy --start-monitoring [选项]
+```
+
+自动启动Chrome实例并开始监控。
+
+**选项**：
+- `--daemon` - 后台运行
+- `--duration <秒>` - 监控持续时间
+- `--output <模式>` - 输出过滤（见下文）
+- `--data-dir <路径>` - 数据保存目录
+
+**示例**：
+```bash
+# 监控5分钟
+browserfairy --start-monitoring --duration 300
+
+# 后台运行
+browserfairy --start-monitoring --daemon
+
+# AI调试模式
+browserfairy --start-monitoring --output errors-only --data-dir .
+```
+
+### 手动连接监控
+
+```bash
+browserfairy --monitor-comprehensive [选项]
+```
+
+连接到已运行的Chrome实例（需要先启动Chrome调试模式）。
+
+**Chrome启动方式**：
+```bash
+# macOS
+open -a "Google Chrome" --args --remote-debugging-port=9222
+
+# Linux
+google-chrome --remote-debugging-port=9222
+
+# Windows
+chrome.exe --remote-debugging-port=9222
+```
+
+## 输出控制
+
+### 输出模式 (--output)
+
+控制收集哪些类型的数据：
+
+| 模式 | 说明 | 包含数据 |
+|------|------|----------|
+| `all` | 完整数据（默认） | 所有类型 |
+| `errors-only` | 仅错误 | console:error, exception, network:failed |
+| `ai-debug` | AI调试 | errors + memory |
+| `performance` | 性能分析 | memory, gc, network:complete |
+| `minimal` | 最小化 | console:error, exception |
+
+### 自定义输出
+
+```bash
+# 细粒度控制
+browserfairy --monitor-comprehensive \
+  --output console:error,console:warn,network:failed,memory
+
+# 支持的类型：
+# - console:error/warn/log/info/debug
+# - network:start/complete/failed
+# - memory, gc, exception, longtask, storage
+```
+
+### 数据目录 (--data-dir)
+
+指定数据保存位置：
+
+```bash
+# 保存到当前目录
+browserfairy --monitor-comprehensive --data-dir .
+
+# 保存到指定路径
+browserfairy --monitor-comprehensive --data-dir /path/to/data
+
+# 使用环境变量
+export BROWSERFAIRY_DATA_DIR=/my/data
+browserfairy --monitor-comprehensive
+```
+
+## 专项监控
+
+### 内存监控
+
+```bash
+browserfairy --monitor-memory
+```
+
+仅监控内存使用情况。
+
+### 标签页监控
+
+```bash
+browserfairy --monitor-tabs
+```
+
+实时监控标签页的创建、关闭和URL变化。
+
+### 基础数据收集
+
+```bash
+browserfairy --start-data-collection
+```
+
+启动基础的数据收集（内存+存储）。
+
+## 数据分析
+
+### 分析所有网站
+
+```bash
+browserfairy --analyze-sites
+```
+
+输出示例：
+```
+BrowserFairy 数据分析概览
+==================================================
+发现监控会话: 3 个
+
+example.com:
+  监控会话: 2 个
+  总记录数: 1247
+  数据类型: console, memory, network
+
+news.site.com:
+  监控会话: 1 个
+  总记录数: 892
+  数据类型: console, memory
+```
+
+### 分析特定网站
+
+```bash
+browserfairy --analyze-sites example.com
+```
+
+显示特定网站的详细分析。
+
+## 存储快照
+
+### DOMStorage快照
+
+```bash
+browserfairy --snapshot-storage-once [选项]
+```
+
+对当前打开的页面进行localStorage/sessionStorage快照。
+
+**选项**：
+- `--snapshot-hostname <域名>` - 仅快照指定网站
+- `--snapshot-maxlen <长度>` - 值的最大长度（默认2048）
+
+**示例**：
+```bash
+# 快照所有页面
+browserfairy --snapshot-storage-once
+
+# 仅快照example.com
+browserfairy --snapshot-storage-once --snapshot-hostname example.com
+
+# 限制敏感数据长度
+browserfairy --snapshot-storage-once --snapshot-maxlen 100
+```
+
+## 工具命令
+
+### 测试连接
+
+```bash
+browserfairy --test-connection
+```
+
+测试与Chrome的连接状态。
+
+### Chrome信息
+
+```bash
+browserfairy --chrome-info
+```
+
+显示Chrome版本和调试信息。
+
+### 列出标签页
+
+```bash
+browserfairy --list-tabs
+```
+
+输出当前所有标签页的JSON信息。
+
+## 后台管理
+
+### 启动后台监控
+
+```bash
+# 启动
+browserfairy --start-monitoring --daemon
+
+# 或手动连接模式
+browserfairy --monitor-comprehensive --daemon
+```
+
+### 查看后台进程
+
+```bash
+# 查看进程
+ps aux | grep browserfairy
+
+# 查看日志
+tail -f ~/BrowserFairyData/monitor.log
+
+# 查看PID
+cat ~/BrowserFairyData/monitor.pid
+```
+
+### 停止后台监控
+
+```bash
+# 使用kill
+kill $(cat ~/BrowserFairyData/monitor.pid)
+
+# 或使用pkill
+pkill -f browserfairy
+```
+
+## 环境变量
+
+| 变量名 | 说明 | 默认值 |
+|--------|------|--------|
+| `BROWSERFAIRY_DATA_DIR` | 数据存储目录 | `~/BrowserFairyData` |
+| `BROWSERFAIRY_LOG_LEVEL` | 日志级别 | `INFO` |
+| `BROWSERFAIRY_CHROME_PORT` | Chrome调试端口 | `9222` |
+
+## 完整选项列表
+
+```bash
+browserfairy --help
+```
+
+显示所有可用命令和选项。
+
+## 常用组合
+
+### 开发调试
+
+```bash
+# 错误调试
+browserfairy --start-monitoring \
+  --output errors-only \
+  --data-dir ./debug
+
+# 性能优化
+browserfairy --start-monitoring \
+  --output performance \
+  --data-dir ./perf
+```
+
+### 生产监控
+
+```bash
+# 后台长期监控
+browserfairy --start-monitoring \
+  --daemon \
+  --output ai-debug
+
+# 定时分析
+crontab -e
+# 0 */6 * * * browserfairy --analyze-sites >> /var/log/browserfairy-analysis.log
+```
+
+### CI/CD集成
+
+```bash
+#!/bin/bash
+# ci-test.sh
+
+# 启动监控
+browserfairy --start-monitoring --daemon
+
+# 运行测试
+npm test
+
+# 收集结果
+browserfairy --analyze-sites > test-report.txt
+
+# 清理
+pkill -f browserfairy
+```
+
+## 故障排查
+
+### 调试模式
+
+```bash
+# 启用详细日志
+BROWSERFAIRY_LOG_LEVEL=DEBUG browserfairy --test-connection
+
+# 指定Chrome端口
+BROWSERFAIRY_CHROME_PORT=9223 browserfairy --monitor-comprehensive
+```
+
+### 常见问题
+
+1. **连接失败**：确保Chrome以调试模式运行
+2. **权限错误**：检查数据目录权限
+3. **端口冲突**：使用不同的调试端口
+
+## 更多帮助
+
+- [快速开始](./getting-started.md)
+- [AI调试指南](./ai-debugging.md)
+- [故障排查](./troubleshooting.md)

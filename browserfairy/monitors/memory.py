@@ -960,8 +960,8 @@ class MemoryCollector:
         # 或：at url:line:column
         
         patterns = [
-            r'at\s+(\w+)\s+\(([^:]+):(\d+):(\d+)\)',  # at func (url:line:col)
-            r'at\s+([^:]+):(\d+):(\d+)'               # at url:line:col
+            r'at\s+(.*?)\s+\((.*?):(\d+):(\d+)\)',  # at func (url:line:col) with colon-friendly URL
+            r'at\s+(.*?):(\d+):(\d+)'                  # at url:line:col with colon-friendly URL
         ]
         
         for pattern in patterns:
