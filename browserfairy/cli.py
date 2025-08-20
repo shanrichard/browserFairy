@@ -723,7 +723,8 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
 
 
 async def start_monitoring_service(log_file: Optional[str] = None, 
-                                 duration: Optional[int] = None) -> int:
+                                 duration: Optional[int] = None,
+                                 enable_source_map: bool = False) -> int:
     """启动完整监控服务 - 极简封装"""
     from .service import BrowserFairyService
     from .utils.paths import ensure_data_directory
@@ -734,7 +735,7 @@ async def start_monitoring_service(log_file: Optional[str] = None,
         log_file = str(data_dir / "monitor.log")
     
     # 创建并启动服务
-    service = BrowserFairyService(log_file=log_file)
+    service = BrowserFairyService(log_file=log_file, enable_source_map=enable_source_map)
     
     print("BrowserFairy starting comprehensive monitoring...")
     print(f"Monitor log: {log_file}")
@@ -745,7 +746,8 @@ async def start_monitoring_service(log_file: Optional[str] = None,
 
 
 async def run_daemon_start_monitoring(log_file: Optional[str] = None, 
-                                    duration: Optional[int] = None) -> int:
+                                    duration: Optional[int] = None,
+                                    enable_source_map: bool = False) -> int:
     """daemon模式的start_monitoring - 复用现有daemon框架"""
     import atexit
     from pathlib import Path
@@ -797,12 +799,13 @@ async def run_daemon_start_monitoring(log_file: Optional[str] = None,
     
     # 调用start_monitoring_service而不是monitor_comprehensive
     try:
-        return loop.run_until_complete(start_monitoring_service(log_file, duration))
+        return loop.run_until_complete(start_monitoring_service(log_file, duration, enable_source_map=enable_source_map))
     finally:
         loop.close()
 
 
-async def monitor_single_site(host: str, port: int, duration: Optional[int] = None) -> int:
+async def monitor_single_site(host: str, port: int, duration: Optional[int] = None,
+                            enable_source_map: bool = False) -> int:
     """Minimal single-site monitor for https://t.signalplus.com.
 
     Connects to existing Chrome, opens the target URL, attaches a single session,
@@ -855,7 +858,8 @@ async def monitor_single_site(host: str, port: int, duration: Optional[int] = No
             hostname=HOSTNAME,
             data_callback=unified_callback,
             enable_comprehensive=True,
-            status_callback=status_callback
+            status_callback=status_callback,
+            enable_source_map=enable_source_map
         )
 
         await collector.attach()
@@ -1331,19 +1335,31 @@ async def main() -> None:
             )
         sys.exit(exit_code)
     elif args.monitor_signalplus:
-        exit_code = await monitor_single_site(args.host, args.port, args.duration)
+        exit_code = await monitor_single_site(
+            args.host, args.port, args.duration,
+            enable_source_map=args.enable_source_map
+        )
         sys.exit(exit_code)
     elif args.start_monitoring:
         if args.daemon:
             # daemon模式处理
             if os.name != 'posix':
                 print("Daemon mode not supported on Windows, running in foreground...")
-                exit_code = await start_monitoring_service(args.log_file, args.duration)
+                exit_code = await start_monitoring_service(
+                    args.log_file, args.duration,
+                    enable_source_map=args.enable_source_map
+                )
             else:
-                exit_code = await run_daemon_start_monitoring(args.log_file, args.duration)
+                exit_code = await run_daemon_start_monitoring(
+                    args.log_file, args.duration,
+                    enable_source_map=args.enable_source_map
+                )
         else:
             # 前台模式
-            exit_code = await start_monitoring_service(args.log_file, args.duration)
+            exit_code = await start_monitoring_service(
+                args.log_file, args.duration,
+                enable_source_map=args.enable_source_map
+            )
         sys.exit(exit_code)
     elif args.snapshot_storage_once:
         exit_code = await snapshot_storage_once(
