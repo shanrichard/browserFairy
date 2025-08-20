@@ -234,3 +234,29 @@ class TestSourceMapResolver:
         assert "url0" not in resolver.source_map_cache
         assert "url3" in resolver.source_map_cache
         assert len(resolver.source_map_cache) == 3
+
+    @pytest.mark.asyncio
+    async def test_relative_url_cache_normalization(self, resolver):
+        """相对URL规范化为绝对URL后应命中同一缓存，避免重复下载"""
+        with patch('browserfairy.analysis.source_map.sourcemap') as mock_sourcemap:
+            mock_source_map = MagicMock()
+            mock_sourcemap.loads.return_value = mock_source_map
+
+            # Mock HTTP client to track calls
+            mock_response = MagicMock()
+            mock_response.text = '{"version": 3}'
+            mock_response.raise_for_status = MagicMock()
+            resolver.http_client.get = AsyncMock(return_value=mock_response)
+
+            # First call with relative URL
+            abs_url = "https://example.com/app.js.map"
+            rel_url = "app.js.map"
+            result1 = await resolver._get_source_map("https://example.com/app.js", rel_url)
+            # Second call with absolute URL
+            result2 = await resolver._get_source_map("https://example.com/app.js", abs_url)
+
+            assert result1 is not None and result2 is not None
+            # Only one HTTP call should be made due to cache reuse
+            assert resolver.http_client.get.call_count == 1
+            # Cache should be stored under absolute URL key
+            assert abs_url in resolver.source_map_cache

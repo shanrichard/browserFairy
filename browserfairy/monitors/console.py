@@ -126,9 +126,15 @@ class ConsoleMonitor:
         # Apply Source Map resolution if enabled
         if self.source_map_resolver and exception_data.get("stackTrace"):
             try:
-                exception_data["stackTrace"] = await self.source_map_resolver.resolve_stack_trace(
-                    exception_data["stackTrace"]
+                # Add short timeout to avoid blocking main monitoring flow
+                exception_data["stackTrace"] = await asyncio.wait_for(
+                    self.source_map_resolver.resolve_stack_trace(
+                        exception_data["stackTrace"]
+                    ),
+                    timeout=0.2
                 )
+            except asyncio.TimeoutError:
+                logger.debug("Source map resolution timed out; keeping original stack")
             except Exception as e:
                 logger.debug(f"Source map resolution failed: {e}")
                 # Failed: keep original stack trace

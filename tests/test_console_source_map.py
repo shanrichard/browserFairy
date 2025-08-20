@@ -169,6 +169,40 @@ class TestConsoleMonitorWithSourceMap:
         call_args = console_monitor.event_queue.put_nowait.call_args
         event_type, event_data = call_args[0][0]
         assert "original" not in event_data["stackTrace"][0]
+
+    @pytest.mark.asyncio
+    async def test_source_map_resolution_timeout(self, console_monitor, monkeypatch):
+        """当解析超时时应保持原堆栈并继续上报"""
+        console_monitor.enable_source_map = True
+        console_monitor.source_map_resolver = AsyncMock()
+        # 让 asyncio.wait_for 在解析时超时
+        import asyncio as _asyncio
+        monkeypatch.setattr(_asyncio, 'wait_for', MagicMock(side_effect=_asyncio.TimeoutError))
+
+        params = {
+            "sessionId": "test_session",
+            "exceptionDetails": {
+                "text": "Test error",
+                "stackTrace": {
+                    "callFrames": [{
+                        "functionName": "test",
+                        "scriptId": "123",
+                        "url": "https://example.com/app.js",
+                        "lineNumber": 1,
+                        "columnNumber": 100
+                    }]
+                }
+            }
+        }
+
+        await console_monitor._on_exception_thrown(params)
+
+        # 验证事件被正常入队
+        console_monitor.event_queue.put_nowait.assert_called_once()
+        # 验证堆栈保持原样（没有original字段）
+        call_args = console_monitor.event_queue.put_nowait.call_args
+        event_type, event_data = call_args[0][0]
+        assert "original" not in event_data["stackTrace"][0]
     
     @pytest.mark.asyncio
     async def test_cleanup_source_map_resolver(self, console_monitor):

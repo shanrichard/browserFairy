@@ -160,9 +160,10 @@ class SourceMapResolver:
             
             # 处理data URL
             if source_map_url.startswith('data:'):
-                # data:application/json;base64,xxxxx
-                _, data = source_map_url.split(',', 1)
-                if 'base64' in source_map_url:
+                # data URL format: data:<mime>[;charset=<c>][;base64],<data>
+                header, data = source_map_url.split(',', 1)
+                is_base64 = header.strip().lower().endswith(';base64')
+                if is_base64:
                     source_map_content = base64.b64decode(data).decode('utf-8')
                 else:
                     source_map_content = data
