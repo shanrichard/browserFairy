@@ -86,6 +86,14 @@ BrowserFairy是一个Chrome性能监控工具，用于帮助开发团队定位We
    - DataManager集成：会话结束时强制同步，保证延迟模式数据落盘
    - **技术亮点**：最小影响原则，默认行为完全不变，向下兼容
 
+9. **2-3-12 HeapProfiler内存采样分析** - 已完成 ✅
+   - HeapSamplingMonitor类：轻量级内存分配采样，基于GCMonitor架构模式
+   - 函数级内存分配统计：Top 10热点函数，精确定位内存泄漏源头
+   - 完整MemoryCollector集成：综合监控模式自动启用HeapProfiler采样
+   - DataManager和CLI数据流支持：heap_sampling.jsonl按网站维度存储
+   - 保守性能参数：64KB采样间隔，60秒收集周期，<2%性能影响
+   - **核心价值**：解决"不知道具体是哪个组件或函数导致内存泄漏"的关键痛点
+
 ### 📋 待完成任务
 
 **1-8 完整监控服务** - 🎯 **最后一个核心任务**
@@ -98,7 +106,7 @@ BrowserFairy是一个Chrome性能监控工具，用于帮助开发团队定位We
 
 ### 📊 技术状态
 
-**测试覆盖**：136个测试用例全部通过，覆盖所有完成功能（包括1-6综合监控、1-7数据分析、2-1优化修复）
+**测试覆盖**：163个测试用例全部通过，覆盖所有完成功能（包括1-6综合监控、1-7数据分析、2-1优化修复、2-3-12 HeapProfiler采样）
 
 **性能基准**（已实现功能）：
 - CPU开销：基础内存监控 <2%
@@ -127,9 +135,10 @@ DataManager + DataWriter - 写入JSONL文件 (~/BrowserFairyData/)
     ↓ 用户手动传输
 开发团队 + Claude Code 分析
 
-# 1-6综合模式（已实现）
+# 1-6综合模式（已实现）+ 2-3-12 HeapProfiler采样
 MemoryCollector (综合模式) - enable_comprehensive=True
-    ├── Console/Network事件 → EventQueue → 关联分析 → DataManager
+    ├── Console/Network/GC事件 → EventQueue → 关联分析 → DataManager
+    ├── HeapSamplingMonitor → HeapProfiler采样 → heap_sampling.jsonl
     └── 基础内存收集（保持不变）
 
 # 1-7数据分析（已实现）
@@ -180,7 +189,10 @@ browserfairy/
 │   │   ├── memory.jsonl          # 内存监控数据
 │   │   ├── console.jsonl         # Console日志（1-6）
 │   │   ├── network.jsonl         # 网络请求数据（1-6）
-│   │   └── correlations.jsonl    # 关联分析结果（1-6）
+│   │   ├── correlations.jsonl    # 关联分析结果（1-6）
+│   │   ├── gc.jsonl              # GC事件数据
+│   │   ├── longtask.jsonl        # 长任务检测数据
+│   │   └── heap_sampling.jsonl   # 内存采样分析数据（2-3-12）
 │   └── news.site.com/
 │       └── ...
 ```

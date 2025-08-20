@@ -16,6 +16,7 @@ session_2025-01-20_143022/          # 监控会话
     ├── longtask.jsonl              # 长任务检测
     ├── gc.jsonl                    # 垃圾回收
     ├── storage.jsonl               # 存储监控
+    ├── heap_sampling.jsonl         # 内存分配采样 🆕
     └── correlations.jsonl          # 关联分析
 ```
 
@@ -168,6 +169,58 @@ browserfairy --snapshot-storage-once
 }
 ```
 
+### 7. 内存分配采样 (heap_sampling.jsonl) 🆕
+
+**HeapProfiler采样分析**（每60秒采集）：
+
+这是最新加入的功能，专门用于精确定位内存泄漏源头函数。
+
+```json
+{
+  "type": "heap_sampling",
+  "timestamp": "2025-01-20T14:30:25.123Z",
+  "hostname": "example.com",
+  "targetId": "target_123",
+  "sessionId": "session_456",
+  "sampling_config": {
+    "sampling_interval": 65536,    // 64KB采样间隔
+    "duration_ms": 45000           // 采样持续时间
+  },
+  "profile_summary": {
+    "total_size": 104857600,       // 总分配量（字节）
+    "total_samples": 250,          // 采样次数
+    "node_count": 85,              // 调用栈节点数
+    "max_allocation_size": 8388608 // 最大单次分配
+  },
+  "top_allocators": [              // 内存分配热点函数（Top 10）
+    {
+      "function_name": "allocateArray",
+      "script_url": "https://example.com/DataProcessor.js",
+      "line_number": 89,
+      "column_number": 23,
+      "self_size": 52428800,       // 该函数分配的内存（50MB）
+      "sample_count": 85,          // 采样次数
+      "allocation_percentage": 50.0 // 占总分配的百分比
+    },
+    {
+      "function_name": "processLargeDataset",
+      "script_url": "https://example.com/utils.js", 
+      "line_number": 156,
+      "self_size": 20971520,       // 20MB
+      "sample_count": 32,
+      "allocation_percentage": 20.0
+    }
+  ],
+  "event_id": "heap_sample_unique_id"
+}
+```
+
+**🎯 使用价值**：
+- **精确定位泄漏源**：定位到具体函数和行号
+- **量化分配影响**：知道每个函数分配了多少内存
+- **优先级排序**：按分配量排序，优先修复影响最大的函数
+- **趋势分析**：结合时间序列数据，发现分配模式
+
 ## 快速分析示例
 
 ### 1. 查找内存泄漏
@@ -223,6 +276,35 @@ with open('network.jsonl', 'r') as f:
             print(f"原因: {data['detailedStack']['reason']}")
             frame = data['detailedStack']['frames'][0]
             print(f"调用者: {frame['functionName']} at line {frame['lineNumber']}")
+```
+
+### 4. 分析内存分配热点 🆕
+
+```python
+# 分析HeapProfiler采样数据，找出内存分配热点
+with open('heap_sampling.jsonl', 'r') as f:
+    for line in f:
+        data = json.loads(line)
+        if data.get('type') == 'heap_sampling':
+            print(f"采样时间: {data['timestamp']}")
+            print(f"总分配量: {data['profile_summary']['total_size'] / 1024 / 1024:.1f} MB")
+            print("内存分配热点函数:")
+            
+            for allocator in data['top_allocators'][:3]:  # 显示Top 3
+                size_mb = allocator['self_size'] / 1024 / 1024
+                func_info = f"{allocator['function_name']}() - {allocator['script_url'].split('/')[-1]}:{allocator['line_number']}"
+                print(f"  {size_mb:.1f}MB ({allocator['allocation_percentage']:.1f}%): {func_info}")
+            print()
+```
+
+**输出示例**：
+```
+采样时间: 2025-01-20T14:30:25.123Z
+总分配量: 100.0 MB
+内存分配热点函数:
+  50.0MB (50.0%): allocateArray() - DataProcessor.js:89
+  20.0MB (20.0%): processLargeDataset() - utils.js:156  
+  15.0MB (15.0%): createBuffers() - renderer.js:234
 ```
 
 ## AI友好的数据特性
@@ -319,6 +401,24 @@ def analyze_memory(file_path):
             for source in sources:
                 if source.get('suspicion') == 'high':
                     print(f"  ⚠️  泄漏源: {source['functionName']} at {source['sourceFile']}:{source['lineNumber']}")
+
+def analyze_heap_sampling(file_path):
+    """分析内存采样数据"""
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+        if not lines:
+            return
+            
+        print("  内存分配热点:")
+        for line in lines:
+            data = json.loads(line)
+            if data.get('type') == 'heap_sampling':
+                top_allocators = data.get('top_allocators', [])[:3]  # 显示top 3
+                for allocator in top_allocators:
+                    size_mb = allocator.get('self_size', 0) / 1024 / 1024
+                    percentage = allocator.get('allocation_percentage', 0)
+                    print(f"    {allocator.get('function_name', 'unknown')} - {size_mb:.1f}MB ({percentage:.1f}%)")
+                    print(f"      文件: {allocator.get('script_url', '')}")
 
 if __name__ == '__main__':
     import sys

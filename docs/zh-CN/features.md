@@ -85,6 +85,20 @@ ProductList.jsx:156 - handleProductClick
 - Major/Minor GC区分
 - GC频率分析
 
+**内存采样分析** ⭐
+- HeapProfiler轻量级采样
+- 函数级内存分配统计
+- 热点函数精确定位
+- 调用栈信息收集
+
+示例：
+```
+内存分配热点：
+ProductList.processData() - app.js:234
+分配了15.2MB内存 (52.3%比例)
+156次采样 - 平均每次98KB
+```
+
 **布局性能**
 - 布局次数和耗时
 - 样式重计算统计
@@ -161,6 +175,7 @@ ProductList.jsx:156 - handleProductClick
 - 自动文件轮转
 - 事件去重机制
 - 可配置输出过滤
+- 支持12种数据类型（memory, console, network, gc, heap_sampling等）
 
 **频率限制**
 - Console事件≤10/秒
@@ -278,7 +293,8 @@ ProductList.jsx:156 - handleProductClick
 - 核心监控功能
 - AI友好输出
 - 一键部署
-- 148个测试用例
+- HeapProfiler内存采样分析
+- 163个测试用例（含15个HeapSampling测试）
 
 ### 计划中 📋
 - 更多AI工具集成

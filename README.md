@@ -60,7 +60,7 @@ browserfairy --start-monitoring --output errors-only --data-dir .
 **之前**：通过描述猜测问题 → **现在**：AI直接看到错误堆栈和行号
 
 ### 场景2：内存泄漏排查  
-**之前**：不知道哪里在泄漏 → **现在**：精确定位到ProductList.jsx:156的事件监听器未清理
+**之前**：不知道哪里在泄漏 → **现在**：精确定位到ProductList.jsx:156的事件监听器未清理，或者DataProcessor.js:89的allocateArray()函数分配了50MB内存但未释放
 
 ### 场景3：性能优化
 **之前**：页面卡但不知道原因 → **现在**：发现5.2MB的API响应和156ms的长任务阻塞
@@ -110,7 +110,10 @@ browserfairy --help
     └── example.com/                # 按网站分组
         ├── console.jsonl           # 错误和日志
         ├── network.jsonl           # 网络请求
-        └── memory.jsonl            # 内存数据
+        ├── memory.jsonl            # 内存数据
+        ├── gc.jsonl                # 垃圾回收事件
+        ├── longtask.jsonl          # 长任务检测
+        └── heap_sampling.jsonl     # 内存分配采样分析 🆕
 ```
 
 ## 🌟 与其他工具的协同
