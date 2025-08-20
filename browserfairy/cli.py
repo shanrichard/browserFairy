@@ -450,7 +450,8 @@ async def comprehensive_data_callback(data_manager, data: dict):
 async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = None,
                               status_callback: Optional[Callable] = None,
                               exit_event: Optional[asyncio.Event] = None,
-                              config: Optional['MonitorConfig'] = None) -> int:
+                              config: Optional['MonitorConfig'] = None,
+                              enable_source_map: bool = False) -> int:
     """Start comprehensive monitoring - daemon support version."""
     connector = ChromeConnector(host=host, port=port)
     
@@ -557,7 +558,8 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
                     hostname=hostname,
                     data_callback=unified_callback,
                     enable_comprehensive=True,
-                    status_callback=status_callback
+                    status_callback=status_callback,
+                    enable_source_map=enable_source_map
                 )
                 await collector.attach()
                 memory_monitor.collectors[target_id] = collector
@@ -592,7 +594,8 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
                         hostname=hostname,
                         data_callback=unified_callback,
                         enable_comprehensive=True,
-                        status_callback=status_callback
+                        status_callback=status_callback,
+                        enable_source_map=enable_source_map
                     )
                     await collector.attach()
                     memory_monitor.collectors[target_id] = collector
@@ -614,7 +617,8 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
                         hostname=hostname,
                         data_callback=unified_callback,
                         enable_comprehensive=True,
-                        status_callback=status_callback
+                        status_callback=status_callback,
+                        enable_source_map=enable_source_map
                     )
                     await collector.attach()
                     memory_monitor.collectors[target_id] = collector
@@ -648,7 +652,8 @@ async def monitor_comprehensive(host: str, port: int, duration: Optional[int] = 
                     hostname=hostname,
                     data_callback=unified_callback,
                     enable_comprehensive=True,
-                    status_callback=status_callback
+                    status_callback=status_callback,
+                    enable_source_map=enable_source_map
                 )
                 await collector.attach()
                 memory_monitor.collectors[target_id] = collector
@@ -1174,6 +1179,11 @@ async def main() -> None:
         action="store_true",
         help="Start comprehensive monitoring (memory + console + network + correlations)"
     )
+    parser.add_argument(
+        "--enable-source-map",
+        action="store_true",
+        help="Enable source map resolution for exception stacks (ConsoleMonitor)"
+    )
     
     parser.add_argument(
         "--monitor-signalplus",
@@ -1304,12 +1314,21 @@ async def main() -> None:
             # Daemon mode (config not supported yet in daemon mode)
             if os.name != 'posix':
                 print("Daemon mode not supported on Windows, running in foreground...")
-                exit_code = await monitor_comprehensive(args.host, args.port, args.duration, config=config)
+                exit_code = await monitor_comprehensive(
+                    args.host, args.port, args.duration, config=config,
+                    enable_source_map=args.enable_source_map
+                )
             else:
-                exit_code = await run_daemon_comprehensive(args.host, args.port, args.duration, args.log_file)
+                exit_code = await run_daemon_comprehensive(
+                    args.host, args.port, args.duration, args.log_file,
+                    enable_source_map=args.enable_source_map
+                )
         else:
             # Foreground mode: pass config if created
-            exit_code = await monitor_comprehensive(args.host, args.port, args.duration, config=config)
+            exit_code = await monitor_comprehensive(
+                args.host, args.port, args.duration, config=config,
+                enable_source_map=args.enable_source_map
+            )
         sys.exit(exit_code)
     elif args.monitor_signalplus:
         exit_code = await monitor_single_site(args.host, args.port, args.duration)
@@ -1357,7 +1376,8 @@ async def main() -> None:
 
 
 async def run_daemon_comprehensive(host: str, port: int, duration: Optional[int] = None, 
-                                  log_file: Optional[str] = None) -> int:
+                                  log_file: Optional[str] = None,
+                                  enable_source_map: bool = False) -> int:
     """Minimal daemon wrapper for comprehensive monitoring."""
     import atexit
     from pathlib import Path
@@ -1429,7 +1449,8 @@ async def run_daemon_comprehensive(host: str, port: int, duration: Optional[int]
             port=port, 
             duration=duration,
             status_callback=log_status,
-            exit_event=exit_event
+            exit_event=exit_event,
+            enable_source_map=enable_source_map
         ))
     finally:
         loop.close()

@@ -32,7 +32,8 @@ class MemoryCollector:
     def __init__(self, connector: ChromeConnector, target_id: str, hostname: str,
                  data_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
                  enable_comprehensive: bool = False,
-                 status_callback: Optional[Callable] = None):
+                 status_callback: Optional[Callable] = None,
+                 enable_source_map: bool = False):
         self.connector = connector
         self.target_id = target_id
         self.hostname = hostname
@@ -48,6 +49,8 @@ class MemoryCollector:
         # New comprehensive monitoring parameters
         self.enable_comprehensive = enable_comprehensive
         self.status_callback = status_callback
+        # Optional source map enhancement for console exceptions (default: disabled)
+        self.enable_source_map = enable_source_map
         
         # New comprehensive components (initialized only when enabled)
         self.event_queue: Optional[asyncio.Queue] = None
@@ -708,7 +711,8 @@ class MemoryCollector:
             self.connector,
             self.session_id,  # Use correct sessionId for filtering
             self.event_queue,
-            self.status_callback
+            self.status_callback,
+            enable_source_map=self.enable_source_map
         )
         self.network_monitor = NetworkMonitor(
             self.connector,
