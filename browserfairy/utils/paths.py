@@ -10,7 +10,8 @@ def get_data_directory() -> Path:
     # Allow environment variable override
     env_override = os.environ.get("BROWSERFAIRY_DATA_DIR")
     if env_override:
-        return Path(env_override)
+        # Expand ~ to home directory path
+        return Path(env_override).expanduser()
     
     # Default to user home directory
     return Path.home() / "BrowserFairyData"
