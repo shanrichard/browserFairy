@@ -90,13 +90,13 @@ class TestGCMonitoring:
         heap_size_30mb = 30 * 1024 * 1024
         
         gc_monitor.last_gc_metrics = {
-            "UsedJSHeapSize": heap_size_50mb,
+            "JSHeapUsedSize": heap_size_50mb,
             "MajorGCCount": 10
         }
         
         # 模拟堆内存大幅减少（可能的GC事件）
         current_metrics = {
-            "UsedJSHeapSize": heap_size_30mb,  # 减少20MB
+            "JSHeapUsedSize": heap_size_30mb,  # 减少20MB
             "MajorGCCount": 10
         }
         

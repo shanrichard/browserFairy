@@ -2,6 +2,43 @@
 
 ## 核心能力
 
+### 🤖 AI智能分析（新功能）
+
+**Claude AI深度分析**
+- 使用Claude AI自动分析监控数据
+- 支持5种分析焦点模式
+- 源代码级问题定位
+- 生成可操作的优化建议
+
+**分析模式**
+1. **综合分析（general）**：全面性能诊断
+2. **内存泄漏（memory_leak）**：精确到函数级的泄漏定位
+3. **性能瓶颈（performance）**：长任务和GC分析
+4. **网络优化（network）**：API性能和失败率分析
+5. **错误诊断（errors）**：结合Source Maps的错误定位
+
+**使用示例**
+```bash
+# 配置API Key
+export ANTHROPIC_API_KEY="sk-ant-api03-xxx..."
+
+# 运行分析
+browserfairy --analyze-with-ai --focus memory_leak
+```
+
+**输出示例**
+```
+发现内存泄漏：
+1. handleClick函数（sources/app.js:245）持续分配内存
+   - 每次调用分配约2MB
+   - 建议：检查是否有未清理的事件监听器
+
+2. WebSocket连接未正确关闭
+   - 位置：sources/websocket-manager.js:89
+   - 影响：每个连接泄漏约500KB
+   - 建议：在组件卸载时调用ws.close()
+```
+
 ### 🧠 内存监控
 
 **实时内存追踪**

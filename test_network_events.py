@@ -4,7 +4,9 @@
 import asyncio
 import json
 from datetime import datetime
+import pytest
 
+@pytest.mark.asyncio
 async def test_network_events():
     """Test raw network event capture."""
     

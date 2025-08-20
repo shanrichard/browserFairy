@@ -106,7 +106,8 @@ class TestBrowserFairyServiceIntegration:
                     port=9222,
                     duration=None,
                     status_callback=None,
-                    exit_event=service.exit_event
+                    exit_event=service.exit_event,
+                    enable_source_map=False
                 )
                 
                 # 验证清理调用

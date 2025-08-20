@@ -993,6 +993,74 @@ async def analyze_sites(hostname: Optional[str] = None) -> int:
         return 1
 
 
+async def analyze_with_ai(session_dir: Optional[str] = None,
+                          focus: str = "general",
+                          custom_prompt: Optional[str] = None) -> int:
+    """Use AI to analyze monitoring data.
+    
+    Args:
+        session_dir: Path to session directory (default: latest session)
+        focus: Analysis focus type
+        custom_prompt: Custom analysis prompt
+        
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    from pathlib import Path
+    from .analysis.ai_analyzer import PerformanceAnalyzer
+    from .data.site_manager import SiteDataManager
+    
+    try:
+        # Determine session directory to analyze
+        if not session_dir:
+            # Use latest session when not specified
+            manager = SiteDataManager()
+            sessions = manager.get_all_sessions()
+            if not sessions:
+                print("没有找到监控数据。请先运行监控命令收集数据。")
+                print("例如：python -m browserfairy --monitor-comprehensive")
+                return 1
+            # Get latest session (sorted by timestamp in directory name)
+            from .utils.paths import get_data_directory
+            data_dir = get_data_directory()
+            session_name = sorted(sessions)[-1]  # This is a string like "session_2025-08-20_100000"
+            session_path = data_dir / session_name
+        else:
+            # Handle user-provided path
+            session_path = Path(session_dir).expanduser()
+            if not session_path.exists():
+                print(f"错误：指定的session目录不存在: {session_path}")
+                return 1
+        
+        print(f"分析session: {session_path.name}")
+        print("启动AI分析器...")
+        
+        # Create analyzer and execute analysis
+        analyzer = PerformanceAnalyzer(session_path)
+        
+        # Check prerequisites
+        if not analyzer.api_key_available or not analyzer.node_available:
+            print("\nAI分析功能暂不可用，请参考上述提示配置环境")
+            print("您可以使用 --analyze-sites 进行基础数据分析")
+            return 1
+            
+        # Execute analysis
+        result = await analyzer.analyze(focus=focus, custom_prompt=custom_prompt)
+        if not result:
+            return 1
+            
+        return 0
+        
+    except KeyboardInterrupt:
+        print("\n分析被用户中断")
+        return 0
+    except Exception as e:
+        print(f"AI分析失败: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
 async def snapshot_storage_once(host: str, port: int, filter_hostname: Optional[str] = None,
                                 max_value_len: int = 2048) -> int:
     """One-time DOMStorage snapshot for open page targets.
@@ -1272,6 +1340,28 @@ async def main() -> None:
     )
     
     parser.add_argument(
+        "--analyze-with-ai",
+        type=str,
+        nargs="?",
+        const="",
+        help="Use AI to analyze monitoring data (default: latest session)"
+    )
+    
+    parser.add_argument(
+        "--focus",
+        type=str,
+        choices=["general", "memory_leak", "performance", "network", "errors"],
+        default="general",
+        help="AI analysis focus (default: general)"
+    )
+    
+    parser.add_argument(
+        "--custom-prompt",
+        type=str,
+        help="Custom AI analysis prompt (overrides --focus)"
+    )
+    
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging"
@@ -1374,6 +1464,15 @@ async def main() -> None:
         hostname = args.analyze_sites if args.analyze_sites else None
         exit_code = await analyze_sites(hostname)
         sys.exit(exit_code)
+    elif args.analyze_with_ai is not None:
+        # --analyze-with-ai was provided
+        session_dir = args.analyze_with_ai if args.analyze_with_ai else None
+        exit_code = await analyze_with_ai(
+            session_dir=session_dir,
+            focus=args.focus,
+            custom_prompt=args.custom_prompt
+        )
+        sys.exit(exit_code)
     else:
         parser.print_help()
         print("\nAvailable commands:")
@@ -1389,6 +1488,9 @@ async def main() -> None:
         print("  --start-monitoring      Start complete monitoring service with automatic Chrome launch")
         print("                         Add --daemon to run in background mode")
         print("  --analyze-sites [HOST]  Analyze collected website data (specify hostname or leave empty for overview)")
+        print("  --analyze-with-ai [DIR] Use AI to analyze monitoring data (default: latest session)")
+        print("                         Use --focus to specify analysis type (memory_leak, performance, network, errors)")
+        print("                         Use --custom-prompt for custom analysis")
 
 
 async def run_daemon_comprehensive(host: str, port: int, duration: Optional[int] = None, 

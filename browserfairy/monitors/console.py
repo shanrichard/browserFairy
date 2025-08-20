@@ -46,6 +46,9 @@ class ConsoleMonitor:
                 from ..analysis.source_map import SourceMapResolver
                 self.source_map_resolver = SourceMapResolver(self.connector)
                 await self.source_map_resolver.initialize(self.session_id)
+                # 设置hostname用于持久化路径确定
+                if self.hostname:
+                    self.source_map_resolver.set_hostname(self.hostname)
                 logger.debug(f"Source map resolver initialized for session {self.session_id}")
             except Exception as e:
                 logger.debug(f"Source map resolver initialization failed: {e}")

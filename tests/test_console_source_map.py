@@ -220,3 +220,63 @@ class TestConsoleMonitorWithSourceMap:
             # 验证调用了cleanup
             mock_resolver.cleanup.assert_called_once()
             assert console_monitor.source_map_resolver is None
+    
+    @pytest.mark.asyncio
+    async def test_console_monitor_set_hostname(self, console_monitor):
+        """测试ConsoleMonitor设置hostname到source map resolver"""
+        console_monitor.enable_source_map = True
+        console_monitor.set_hostname("test.example.com")
+        
+        with patch("browserfairy.analysis.source_map.SourceMapResolver") as MockResolver:
+            mock_resolver = MagicMock()
+            MockResolver.return_value = mock_resolver
+            mock_resolver.initialize = AsyncMock(return_value=True)
+            mock_resolver.set_hostname = MagicMock()
+            
+            await console_monitor.start_monitoring()
+            
+            # 验证set_hostname被调用
+            mock_resolver.set_hostname.assert_called_once_with("test.example.com")
+    
+    @pytest.mark.asyncio
+    async def test_console_monitor_set_hostname_no_hostname(self, console_monitor):
+        """测试ConsoleMonitor无hostname时不调用set_hostname"""
+        console_monitor.enable_source_map = True
+        # 清除fixture设置的hostname
+        console_monitor.hostname = None
+        
+        with patch("browserfairy.analysis.source_map.SourceMapResolver") as MockResolver:
+            mock_resolver = MagicMock()
+            MockResolver.return_value = mock_resolver
+            mock_resolver.initialize = AsyncMock(return_value=True)
+            mock_resolver.set_hostname = MagicMock()
+            
+            await console_monitor.start_monitoring()
+            
+            # 验证set_hostname没有被调用
+            mock_resolver.set_hostname.assert_not_called()
+    
+    @pytest.mark.asyncio
+    async def test_backward_compatibility_unchanged(self, console_monitor):
+        """测试完全向后兼容 - 无构造函数参数变化"""
+        # 验证现有的ConsoleMonitor构造函数仍然工作
+        connector = AsyncMock()
+        connector.on_event = MagicMock()
+        event_queue = AsyncMock()
+        
+        # 创建ConsoleMonitor实例，使用原有的参数
+        from browserfairy.monitors.console import ConsoleMonitor
+        monitor = ConsoleMonitor(connector, "test_session", event_queue)
+        
+        # 验证基本属性正确设置
+        assert monitor.connector == connector
+        assert monitor.session_id == "test_session" 
+        assert monitor.event_queue == event_queue
+        assert monitor.enable_source_map == False  # 默认值
+        
+        # 验证可以正常启动监控
+        await monitor.start_monitoring()
+        
+        # 验证事件处理器被正确注册
+        connector.on_event.assert_any_call("Runtime.consoleAPICalled", monitor._on_console_message)
+        connector.on_event.assert_any_call("Runtime.exceptionThrown", monitor._on_exception_thrown)

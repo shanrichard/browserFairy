@@ -6,6 +6,7 @@
 
 - 🚀 [快速开始指南](./docs/zh-CN/getting-started.md) - 详细安装和配置
 - 🤖 [AI辅助调试](./docs/zh-CN/ai-debugging.md) - Claude Code/Cursor集成最佳实践
+- 🧠 [AI智能分析指南](./docs/AI_ANALYSIS_GUIDE.md) - Claude AI性能分析配置和使用
 - 📊 [数据分析指南](./docs/zh-CN/data-analysis.md) - 理解监控数据格式
 - ⚡ [功能特性](./docs/zh-CN/features.md) - 完整功能列表
 - 🔧 [命令参考](./docs/zh-CN/commands.md) - 所有命令详解
@@ -46,6 +47,10 @@ browserfairy --start-monitoring
 
 # 让AI只看错误信息（推荐）
 browserfairy --start-monitoring --output errors-only --data-dir .
+
+# 🆕 AI智能分析（需配置API Key）
+export ANTHROPIC_API_KEY="your-key-here"
+browserfairy --analyze-with-ai --focus memory_leak
 ```
 
 就这么简单！BrowserFairy会：
@@ -113,8 +118,33 @@ browserfairy --help
         ├── memory.jsonl            # 内存数据
         ├── gc.jsonl                # 垃圾回收事件
         ├── longtask.jsonl          # 长任务检测
-        └── heap_sampling.jsonl     # 内存分配采样分析 🆕
+        ├── heap_sampling.jsonl     # 内存分配采样分析
+        ├── source_maps/            # Source Map文件
+        └── sources/                # 提取的源代码文件
 ```
+
+## 🧠 AI智能分析（新功能）
+
+BrowserFairy现在集成了Claude AI，可以智能分析收集的监控数据：
+
+### 快速开始
+```bash
+# 1. 获取API Key（访问 https://console.anthropic.com）
+export ANTHROPIC_API_KEY="sk-ant-api03-xxx..."
+
+# 2. 运行AI分析
+browserfairy --analyze-with-ai                    # 综合分析
+browserfairy --analyze-with-ai --focus memory_leak # 内存泄漏专项
+browserfairy --analyze-with-ai --focus performance # 性能瓶颈分析
+```
+
+### 分析能力
+- **内存泄漏定位**：精确到源代码行级别，识别未清理的事件监听器、闭包引用等
+- **性能瓶颈诊断**：分析长任务、GC频率、主线程阻塞
+- **错误根因分析**：结合Source Maps定位真实代码位置
+- **网络优化建议**：API响应时间分析、失败率统计、优化建议
+
+详细配置和使用说明请查看 [AI智能分析指南](./docs/AI_ANALYSIS_GUIDE.md)
 
 ## 🌟 与其他工具的协同
 

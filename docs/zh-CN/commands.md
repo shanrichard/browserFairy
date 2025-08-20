@@ -124,11 +124,13 @@ browserfairy --start-data-collection
 
 ## 数据分析
 
-### 分析所有网站
+### 基础统计分析
 
 ```bash
-browserfairy --analyze-sites
+browserfairy --analyze-sites [hostname]
 ```
+
+分析收集的监控数据，提供基础统计信息。
 
 输出示例：
 ```
@@ -154,6 +156,43 @@ browserfairy --analyze-sites example.com
 ```
 
 显示特定网站的详细分析。
+
+### AI智能分析（新功能）
+
+```bash
+browserfairy --analyze-with-ai [session_dir] [选项]
+```
+
+使用Claude AI深度分析监控数据，提供智能诊断和优化建议。
+
+**前置要求**：
+```bash
+# 配置API Key（访问 https://console.anthropic.com 获取）
+export ANTHROPIC_API_KEY="sk-ant-api03-xxx..."
+```
+
+**选项**：
+- `--focus <类型>` - 分析焦点
+  - `general` - 综合分析（默认）
+  - `memory_leak` - 内存泄漏专项
+  - `performance` - 性能瓶颈分析
+  - `network` - 网络优化
+  - `errors` - 错误诊断
+- `--custom-prompt <文本>` - 自定义分析需求
+
+**示例**：
+```bash
+# 综合分析最新session
+browserfairy --analyze-with-ai
+
+# 内存泄漏专项分析
+browserfairy --analyze-with-ai --focus memory_leak
+
+# 自定义分析需求
+browserfairy --analyze-with-ai --custom-prompt "分析最近1小时的错误"
+```
+
+详细配置和使用说明请查看 [AI智能分析指南](../AI_ANALYSIS_GUIDE.md)
 
 ## 存储快照
 

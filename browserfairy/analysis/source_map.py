@@ -1,9 +1,14 @@
 """Source Map解析器 - 将压缩代码位置映射到源代码"""
 
+import asyncio
 import base64
+import hashlib
 import json
 import logging
+import os
 from collections import OrderedDict
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
@@ -33,6 +38,11 @@ class SourceMapResolver:
         self.initialized = False  # 表示解析器已初始化
         self.http_client = httpx.AsyncClient(timeout=5.0)
         
+        # 持久化相关属性
+        self.hostname = None  # 由ConsoleMonitor设置
+        self.persistence_semaphore = asyncio.Semaphore(2)  # 并发控制
+        self.metadata_lock = asyncio.Lock()  # 专用锁保护metadata.jsonl写入
+        
     async def initialize(self, session_id: str) -> bool:
         """初始化并监听脚本事件（复用已有的Debugger domain）"""
         self.session_id = session_id
@@ -47,6 +57,43 @@ class SourceMapResolver:
         except Exception as e:
             logger.warning(f"Failed to initialize SourceMapResolver: {e}")
             return False
+    
+    def set_hostname(self, hostname: str) -> None:
+        """设置hostname用于确定存储路径"""
+        self.hostname = hostname
+        logger.debug(f"SourceMapResolver hostname set to: {hostname}")
+    
+    def _get_current_session_dir(self) -> Optional[Path]:
+        """自动发现当前会话目录（按目录名中的时间戳排序，避免ctime问题）"""
+        try:
+            from ..utils.paths import get_data_directory
+            data_dir = get_data_directory()
+            
+            # 查找所有session_*目录
+            session_dirs = list(data_dir.glob("session_*"))
+            if not session_dirs:
+                logger.debug("No session directories found")
+                return None
+            
+            # 按目录名中的时间戳排序（session_YYYY-MM-DD_HHMMSS格式）
+            def extract_timestamp(path: Path) -> str:
+                try:
+                    # 提取session_之后的时间戳部分
+                    name_parts = path.name.split('_', 1)
+                    if len(name_parts) > 1:
+                        return name_parts[1]  # YYYY-MM-DD_HHMMSS部分
+                    return ""
+                except:
+                    return ""
+            
+            # 按时间戳排序，返回最新的
+            sorted_sessions = sorted(session_dirs, key=extract_timestamp, reverse=True)
+            latest_session = sorted_sessions[0]
+            logger.debug(f"Found latest session directory: {latest_session}")
+            return latest_session
+        except Exception as e:
+            logger.warning(f"Failed to discover session directory: {e}")
+            return None
     
     async def _on_script_parsed(self, params: dict) -> None:
         """监听脚本解析事件，收集sourceMapURL"""
@@ -103,7 +150,7 @@ class SourceMapResolver:
                 return frame
             
             # 获取Source Map对象
-            source_map = await self._get_source_map(script_meta['url'], source_map_url)
+            source_map = await self._get_source_map(script_meta['url'], source_map_url, script_id)
             if not source_map:
                 return frame
             
@@ -144,7 +191,7 @@ class SourceMapResolver:
             
         return frame
     
-    async def _get_source_map(self, script_url: str, source_map_url: str) -> Optional[Any]:
+    async def _get_source_map(self, script_url: str, source_map_url: str, script_id: Optional[str] = None) -> Optional[Any]:
         """获取并解析Source Map（v1仅支持data URL和HTTP）"""
         try:
             # 先规范化URL为绝对路径，确保缓存键一致
@@ -179,6 +226,13 @@ class SourceMapResolver:
             # 更新缓存
             self._update_source_map_cache(source_map_url, source_map)
             
+            # 异步持久化source map和源文件
+            if self.hostname and script_id:
+                # 异步持久化，不等待完成，不阻塞主流程
+                asyncio.create_task(self._persist_source_map_async(
+                    script_id, source_map_url, source_map_content, source_map
+                ))
+            
             return source_map
             
         except Exception as e:
@@ -206,6 +260,127 @@ class SourceMapResolver:
             self.source_map_cache.popitem(last=False)
         # 添加到末尾
         self.source_map_cache[url] = source_map
+    
+    async def _persist_source_map_async(self, script_id: str, source_map_url: str,
+                                       source_map_content: str, source_map: Any) -> None:
+        """异步持久化source map和源文件（完全自管理，零耦合）"""
+        if not self.hostname:
+            return
+            
+        async with self.persistence_semaphore:
+            try:
+                # 使用 asyncio.to_thread 执行文件操作（不含metadata写入）
+                metadata_record = await asyncio.to_thread(
+                    self._write_source_map_files, 
+                    script_id, source_map_url, source_map_content, source_map
+                )
+                
+                # 如果返回了metadata记录，在异步上下文中写入（加锁保护）
+                if metadata_record:
+                    await self._write_metadata_record(metadata_record)
+                    
+                logger.debug(f"Source map persisted for script {script_id}")
+            except Exception as e:
+                logger.warning(f"Source map persistence failed for script {script_id}: {e}")
+    
+    async def _write_metadata_record(self, metadata_record: Dict[str, Any]) -> None:
+        """异步写入metadata记录（加锁保护）"""
+        session_dir = self._get_current_session_dir()
+        if not session_dir:
+            return
+            
+        metadata_file = session_dir / self.hostname / "source_maps" / "metadata.jsonl"
+        
+        async with self.metadata_lock:
+            try:
+                # 使用asyncio.to_thread执行文件写入
+                await asyncio.to_thread(self._write_metadata_to_file, metadata_file, metadata_record)
+            except Exception as e:
+                logger.warning(f"Failed to write metadata record: {e}")
+    
+    def _write_metadata_to_file(self, metadata_file: Path, metadata_record: Dict[str, Any]) -> None:
+        """同步写入metadata到文件"""
+        with open(metadata_file, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(metadata_record, ensure_ascii=False) + '\n')
+            f.flush()
+            os.fsync(f.fileno())
+    
+    def _write_source_map_files(self, script_id: str, source_map_url: str, 
+                               source_map_content: str, source_map: Any) -> Optional[Dict[str, Any]]:
+        """同步文件写入逻辑（在thread中执行）"""
+        session_dir = self._get_current_session_dir()
+        if not session_dir:
+            logger.warning("No session directory found for source map persistence")
+            return None
+            
+        # 创建目标目录结构
+        site_dir = session_dir / self.hostname
+        source_maps_dir = site_dir / "source_maps"
+        sources_dir = site_dir / "sources"
+        
+        # 确保目录存在
+        source_maps_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 安全的文件名（移除特殊字符）
+        safe_script_id = "".join(c for c in script_id if c.isalnum() or c in "._-")
+        source_map_file = source_maps_dir / f"{safe_script_id}.map.json"
+        
+        # 写入source map文件
+        source_map_data = {
+            "sourceMapUrl": source_map_url,
+            "scriptUrl": self.script_metadata.get(script_id, {}).get("url", ""),
+            "sourceMap": json.loads(source_map_content) if isinstance(source_map_content, str) else source_map_content,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        with open(source_map_file, 'w', encoding='utf-8') as f:
+            json.dump(source_map_data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        
+        # 提取并保存sourcesContent中的源文件
+        if hasattr(source_map, 'raw') and isinstance(source_map.raw, dict):
+            sources_content = source_map.raw.get('sourcesContent')
+            sources = source_map.raw.get('sources', [])
+            
+            if sources_content and sources:
+                sources_dir.mkdir(parents=True, exist_ok=True)
+                
+                for i, (source_path, content) in enumerate(zip(sources, sources_content)):
+                    if content:
+                        # 计算内容哈希以避免重复和命名冲突
+                        content_hash = hashlib.blake2s(content.encode('utf-8'), digest_size=8).hexdigest()
+                        
+                        # 使用哈希前缀 + 原始文件名避免冲突：hash_original_name
+                        safe_basename = source_path.replace('/', '_').replace('\\', '_')
+                        unique_filename = f"{content_hash}_{safe_basename}"
+                        source_file = sources_dir / unique_filename
+                        
+                        # 如果文件已存在且内容相同则跳过（基于哈希去重）
+                        if source_file.exists():
+                            try:
+                                with open(source_file, 'r', encoding='utf-8') as existing:
+                                    existing_content = existing.read()
+                                    if existing_content == content:
+                                        continue  # 内容相同，跳过写入
+                            except:
+                                pass  # 读取失败，继续写入覆盖
+                        
+                        # 写入源文件
+                        with open(source_file, 'w', encoding='utf-8') as f:
+                            f.write(content)
+                            f.flush()
+                            os.fsync(f.fileno())
+        
+        # 准备metadata记录（返回给调用者异步写入）
+        metadata_record = {
+            "scriptId": script_id,
+            "sourceMapFile": f"{safe_script_id}.map.json",
+            "scriptUrl": self.script_metadata.get(script_id, {}).get("url", ""),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        return metadata_record
     
     async def cleanup(self):
         """清理资源"""
