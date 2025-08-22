@@ -33,7 +33,8 @@ class MemoryCollector:
                  data_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
                  enable_comprehensive: bool = False,
                  status_callback: Optional[Callable] = None,
-                 enable_source_map: bool = False):
+                 enable_source_map: bool = False,
+                 persist_all_source_maps: bool = False):
         self.connector = connector
         self.target_id = target_id
         self.hostname = hostname
@@ -51,6 +52,7 @@ class MemoryCollector:
         self.status_callback = status_callback
         # Optional source map enhancement for console exceptions (default: disabled)
         self.enable_source_map = enable_source_map
+        self.persist_all_source_maps = persist_all_source_maps
         
         # New comprehensive components (initialized only when enabled)
         self.event_queue: Optional[asyncio.Queue] = None
@@ -712,7 +714,8 @@ class MemoryCollector:
             self.session_id,  # Use correct sessionId for filtering
             self.event_queue,
             self.status_callback,
-            enable_source_map=self.enable_source_map
+            enable_source_map=self.enable_source_map,
+            persist_all_source_maps=self.persist_all_source_maps
         )
         self.network_monitor = NetworkMonitor(
             self.connector,

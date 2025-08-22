@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class SourceMapResolver:
     """Source Map解析器 - 将压缩代码位置映射到源代码"""
     
-    def __init__(self, connector, max_cache_size: int = 10):
+    def __init__(self, connector, max_cache_size: int = 10, persist_all: bool = False):
         self.connector = connector
         self.session_id = None
         
@@ -42,6 +42,10 @@ class SourceMapResolver:
         self.hostname = None  # 由ConsoleMonitor设置
         self.persistence_semaphore = asyncio.Semaphore(2)  # 并发控制
         self.metadata_lock = asyncio.Lock()  # 专用锁保护metadata.jsonl写入
+        
+        # 主动持久化相关属性
+        self.persist_all = persist_all  # 是否主动持久化所有source maps
+        self.download_semaphore = asyncio.Semaphore(3)  # 限制并发下载数
         
     async def initialize(self, session_id: str) -> bool:
         """初始化并监听脚本事件（复用已有的Debugger domain）"""
@@ -96,7 +100,7 @@ class SourceMapResolver:
             return None
     
     async def _on_script_parsed(self, params: dict) -> None:
-        """监听脚本解析事件，收集sourceMapURL"""
+        """监听脚本解析事件，收集sourceMapURL并保存脚本源代码"""
         if params.get("sessionId") != self.session_id:
             return
             
@@ -109,8 +113,121 @@ class SourceMapResolver:
                 "url": url,
                 "sourceMapURL": source_map_url
             }
-            if source_map_url:
-                logger.debug(f"Found source map for {url}: {source_map_url}")
+            
+            # 如果启用了persist_all，保存所有脚本（不管有没有source map）
+            if self.persist_all and self.hostname:
+                if source_map_url:
+                    logger.debug(f"Found source map for {url}: {source_map_url}")
+                    # 有source map，下载source map和关联的源文件
+                    asyncio.create_task(self._proactive_persist(script_id, url, source_map_url))
+                else:
+                    logger.debug(f"No source map for {url}, will save script source directly")
+                    # 没有source map，直接获取并保存脚本源代码
+                    asyncio.create_task(self._persist_script_source(script_id, url))
+    
+    async def _proactive_persist(self, script_id: str, script_url: str, source_map_url: str) -> None:
+        """主动下载并持久化source map（不等待异常）"""
+        async with self.download_semaphore:  # 限流
+            try:
+                # 复用现有的_get_source_map方法
+                source_map = await self._get_source_map(script_url, source_map_url, script_id)
+                if source_map:
+                    logger.debug(f"Proactively persisted source map for {script_url}")
+            except Exception as e:
+                logger.warning(f"Failed to proactively persist source map for {script_url}: {e}")
+    
+    async def _persist_script_source(self, script_id: str, script_url: str) -> None:
+        """获取并持久化脚本源代码（没有source map的情况）"""
+        async with self.download_semaphore:  # 限流
+            try:
+                # 调用Debugger.getScriptSource获取源代码
+                response = await self.connector.call(
+                    "Debugger.getScriptSource",
+                    {"scriptId": script_id},
+                    session_id=self.session_id
+                )
+                
+                if response and "scriptSource" in response:
+                    # 保存脚本源代码
+                    await self._save_script_source(script_id, script_url, response["scriptSource"])
+                    logger.debug(f"Persisted script source for {script_url}")
+                else:
+                    logger.warning(f"No script source returned for {script_url}")
+            except Exception as e:
+                logger.warning(f"Failed to persist script source for {script_url}: {e}")
+    
+    async def _save_script_source(self, script_id: str, script_url: str, script_content: str) -> None:
+        """保存脚本源代码到文件系统"""
+        async with self.persistence_semaphore:
+            try:
+                # 使用 asyncio.to_thread 执行文件操作
+                await asyncio.to_thread(
+                    self._write_script_source_file,
+                    script_id, script_url, script_content
+                )
+            except Exception as e:
+                logger.warning(f"Failed to save script source for {script_url}: {e}")
+    
+    def _write_script_source_file(self, script_id: str, script_url: str, script_content: str) -> None:
+        """同步写入脚本源代码到文件（在thread中执行）"""
+        session_dir = self._get_current_session_dir()
+        if not session_dir:
+            logger.warning("No session directory found for script source persistence")
+            return
+            
+        # 创建目标目录结构
+        site_dir = session_dir / self.hostname
+        sources_dir = site_dir / "sources"
+        sources_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 从URL提取文件名
+        from urllib.parse import urlparse
+        parsed_url = urlparse(script_url)
+        filename = parsed_url.path.split('/')[-1] if parsed_url.path else 'unknown.js'
+        
+        # 如果没有文件名或文件名无效，使用scriptId
+        if not filename or filename == '/' or not filename.endswith(('.js', '.mjs', '.jsx', '.ts', '.tsx')):
+            filename = f"script_{script_id}.js"
+        
+        # 计算内容哈希以避免重复
+        content_hash = hashlib.blake2s(script_content.encode('utf-8'), digest_size=8).hexdigest()
+        
+        # 使用哈希前缀 + 文件名避免冲突
+        unique_filename = f"{content_hash}_{filename}"
+        source_file = sources_dir / unique_filename
+        
+        # 如果文件已存在且内容相同则跳过
+        if source_file.exists():
+            try:
+                with open(source_file, 'r', encoding='utf-8') as existing:
+                    if existing.read() == script_content:
+                        logger.debug(f"Script source already exists: {unique_filename}")
+                        return
+            except Exception:
+                pass  # 如果读取失败，继续写入
+        
+        # 写入脚本源代码
+        with open(source_file, 'w', encoding='utf-8') as f:
+            f.write(script_content)
+            f.flush()
+            os.fsync(f.fileno())
+        
+        logger.debug(f"Saved script source: {unique_filename}")
+        
+        # 写入元数据记录
+        metadata_file = site_dir / "sources" / "metadata.jsonl"
+        metadata_record = {
+            "scriptId": script_id,
+            "scriptUrl": script_url,
+            "filename": unique_filename,
+            "contentHash": content_hash,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        with open(metadata_file, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(metadata_record, ensure_ascii=False) + '\n')
+            f.flush()
+            os.fsync(f.fileno())
     
     async def resolve_stack_trace(self, stack_trace: List[Dict]) -> List[Dict]:
         """解析整个堆栈跟踪"""

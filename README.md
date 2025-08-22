@@ -42,11 +42,11 @@ Claude Code："我看到了TypeError在Button.jsx第45行，是因为state.user�
 # 安装（需要Python 3.11+）
 curl -sSL https://raw.githubusercontent.com/shanrichard/browserfairy/main/install.sh | sh
 
-# 一键启动监控（自动启动Chrome）
-browserfairy --start-monitoring
+# 一键启动监控（推荐：保存所有脚本源代码）
+browserfairy --start-monitoring --enable-source-map --persist-all-source-maps
 
-# 让AI只看错误信息（推荐）
-browserfairy --start-monitoring --output errors-only --data-dir .
+# 让AI只看错误信息（调试模式）
+browserfairy --start-monitoring --enable-source-map --persist-all-source-maps --output errors-only --data-dir .
 
 # 🆕 AI智能分析（需配置API Key）
 export ANTHROPIC_API_KEY="your-key-here"
@@ -92,11 +92,14 @@ uv run pip install -e .
 ## 🎮 常用命令
 
 ```bash
-# AI调试模式（推荐）
-browserfairy --start-monitoring --enable-source-map --data-dir .
+# 推荐：完整监控模式（保存所有脚本源代码）
+browserfairy --start-monitoring --enable-source-map --persist-all-source-maps
+
+# AI调试模式（保存到当前目录）
+browserfairy --start-monitoring --enable-source-map --persist-all-source-maps --data-dir .
 
 # 后台持续监控
-browserfairy --start-monitoring --daemon
+browserfairy --start-monitoring --enable-source-map --persist-all-source-maps --daemon
 
 # 分析已收集的数据
 browserfairy --analyze-sites
@@ -119,8 +122,8 @@ browserfairy --help
         ├── gc.jsonl                # 垃圾回收事件
         ├── longtask.jsonl          # 长任务检测
         ├── heap_sampling.jsonl     # 内存分配采样分析
-        ├── source_maps/            # Source Map文件
-        └── sources/                # 提取的源代码文件
+        ├── source_maps/            # Source Map文件（如果存在）
+        └── sources/                # 脚本源代码（--persist-all-source-maps时保存所有JS文件）
 ```
 
 ## 🧠 AI智能分析（新功能）

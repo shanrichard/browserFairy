@@ -67,13 +67,14 @@ browserfairy --test-connection
 ### 最简单的方式：一键启动
 
 ```bash
-# 自动启动Chrome并开始监控
-browserfairy --start-monitoring --enable-source-map
+# 推荐：自动启动Chrome并保存所有脚本源代码
+browserfairy --start-monitoring --enable-source-map --persist-all-source-maps
 ```
 
 这会：
 - 启动一个独立的Chrome实例（不影响你的日常浏览器）
 - 开始全面的性能监控
+- **保存所有JavaScript脚本源代码**（包括没有Source Map的）
 - 数据保存到 `~/BrowserFairyData/`
 - 按Ctrl+C停止监控
 
@@ -82,8 +83,10 @@ browserfairy --start-monitoring --enable-source-map
 如果你想配合Claude Code/Cursor使用：
 
 ```bash
-# 只收集错误，保存到当前目录
+# 收集错误和脚本源代码，保存到当前目录
 browserfairy --start-monitoring \
+  --enable-source-map \
+  --persist-all-source-maps \
   --output errors-only \
   --data-dir ./debug_data
 ```
@@ -93,8 +96,8 @@ browserfairy --start-monitoring \
 需要长时间监控时：
 
 ```bash
-# 启动后台监控
-browserfairy --start-monitoring --daemon
+# 启动后台监控（推荐：保存脚本源代码）
+browserfairy --start-monitoring --enable-source-map --persist-all-source-maps --daemon
 
 # 查看运行状态
 ps aux | grep browserfairy

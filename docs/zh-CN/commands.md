@@ -19,18 +19,22 @@ browserfairy --start-monitoring [选项]
 - `--duration <秒>` - 监控持续时间
 - `--output <模式>` - 输出过滤（见下文）
 - `--data-dir <路径>` - 数据保存目录
-- `--enable-source-map` - 启用Source Map解析（将压缩代码错误映射到源代码）
+- `--enable-source-map` - 启用脚本源代码收集功能（必须）
+- `--persist-all-source-maps` - 保存所有脚本源代码，包括没有Source Map的（强烈推荐）
 
 **示例**：
 ```bash
+# 推荐：完整监控（保存所有脚本源代码）
+browserfairy --start-monitoring --enable-source-map --persist-all-source-maps
+
 # 监控5分钟
-browserfairy --start-monitoring --duration 300
+browserfairy --start-monitoring --enable-source-map --persist-all-source-maps --duration 300
 
 # 后台运行
-browserfairy --start-monitoring --daemon
+browserfairy --start-monitoring --enable-source-map --persist-all-source-maps --daemon
 
-# AI调试模式（推荐启用Source Map）
-browserfairy --start-monitoring --output errors-only --enable-source-map --data-dir .
+# AI调试模式
+browserfairy --start-monitoring --enable-source-map --persist-all-source-maps --output errors-only --data-dir .
 ```
 
 ### 手动连接监控
@@ -222,18 +226,21 @@ browserfairy --snapshot-storage-once --snapshot-maxlen 100
 
 ## Source Map支持
 
-### 启用Source Map解析
+### 脚本源代码收集
 
 ```bash
-# 在任何监控命令中添加 --enable-source-map
-browserfairy --monitor-comprehensive --enable-source-map
-browserfairy --start-monitoring --enable-source-map
+# 推荐：保存所有脚本源代码
+browserfairy --monitor-comprehensive --enable-source-map --persist-all-source-maps
+browserfairy --start-monitoring --enable-source-map --persist-all-source-maps
 ```
 
-**功能说明**：
-- 自动检测JavaScript文件的Source Map
-- 将压缩代码错误位置映射到源代码
-- 在错误堆栈中添加`original`字段
+**功能说明**（2025-08-22更新）：
+- `--enable-source-map`：启用脚本源代码收集功能
+- `--persist-all-source-maps`：保存**所有脚本的源代码**，包括：
+  - 有Source Map的脚本：保存.map文件和源文件
+  - 没有Source Map的脚本：直接保存JS源代码
+- 脚本保存在`sources/`目录，方便离线分析
+- 支持所有网站，包括没有提供Source Map的生产环境
 
 **输出示例**：
 ```json

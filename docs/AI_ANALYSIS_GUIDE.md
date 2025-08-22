@@ -153,6 +153,38 @@ python -m browserfairy --analyze-with-ai --focus memory_leak
 python -m browserfairy --analyze-with-ai --custom-prompt "只分析最近1小时的数据，重点关注网络请求失败"
 ```
 
+### Source Map和脚本源代码配置
+
+BrowserFairy支持保存所有JavaScript脚本源代码，便于离线分析和精确调试：
+
+```bash
+# 推荐：保存所有脚本源代码（包括没有Source Map的脚本）
+python -m browserfairy --start-monitoring --enable-source-map --persist-all-source-maps
+
+# 仅启用Source Map解析（按需下载）
+python -m browserfairy --start-monitoring --enable-source-map
+```
+
+**参数说明**：
+- `--enable-source-map`：启用脚本源代码收集功能（必须）
+- `--persist-all-source-maps`：保存所有脚本的源代码，不管有没有Source Map（强烈推荐）
+
+**重要更新**（2025-08-22）：
+`--persist-all-source-maps`现在会保存**所有脚本的源代码**，包括：
+- 有Source Map的脚本：保存Source Map和映射的源文件
+- 没有Source Map的脚本：直接保存脚本源代码（如t.signalplus.com等网站）
+
+**使用场景**：
+- **生产环境调试**：必须使用两个参数，确保收集到所有脚本源代码
+- **离线AI分析**：使用两个参数，让AI能看到完整的代码上下文
+- **性能分析**：源代码帮助定位具体的函数和代码行
+
+**数据存储**：
+脚本文件会保存在各网站数据目录下：
+- `source_maps/`：Source Map文件（如果存在）
+- `sources/`：所有JavaScript脚本源代码
+- `sources/metadata.jsonl`：脚本元数据记录
+
 ### 参数说明
 
 | 参数 | 说明 | 默认值 |

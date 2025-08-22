@@ -16,7 +16,7 @@ class ConsoleMonitor:
     
     def __init__(self, connector: ChromeConnector, session_id: str,
                  event_queue: asyncio.Queue, status_callback: Optional[Callable] = None,
-                 enable_source_map: bool = False):
+                 enable_source_map: bool = False, persist_all_source_maps: bool = False):
         self.connector = connector
         # In flattened mode, CDP events include a top-level sessionId injected by connector
         # Keep a strict per-session filter to avoid cross-tab duplication
@@ -27,6 +27,7 @@ class ConsoleMonitor:
         
         # Source Map support (v1: disabled by default)
         self.enable_source_map = enable_source_map
+        self.persist_all_source_maps = persist_all_source_maps
         self.source_map_resolver = None
         
     def set_hostname(self, hostname: str):
@@ -44,7 +45,10 @@ class ConsoleMonitor:
         if self.enable_source_map:
             try:
                 from ..analysis.source_map import SourceMapResolver
-                self.source_map_resolver = SourceMapResolver(self.connector)
+                self.source_map_resolver = SourceMapResolver(
+                    self.connector, 
+                    persist_all=self.persist_all_source_maps
+                )
                 await self.source_map_resolver.initialize(self.session_id)
                 # 设置hostname用于持久化路径确定
                 if self.hostname:

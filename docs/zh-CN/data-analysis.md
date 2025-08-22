@@ -17,7 +17,9 @@ session_2025-01-20_143022/          # 监控会话
     ├── gc.jsonl                    # 垃圾回收
     ├── storage.jsonl               # 存储监控
     ├── heap_sampling.jsonl         # 内存分配采样 🆕
-    └── correlations.jsonl          # 关联分析
+    ├── correlations.jsonl          # 关联分析
+    ├── source_maps/                # Source Map文件（如果存在）
+    └── sources/                    # JavaScript脚本源代码（--persist-all-source-maps时保存所有脚本）
 ```
 
 ## 核心数据类型

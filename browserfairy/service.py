@@ -9,11 +9,12 @@ import importlib
 class BrowserFairyService:
     """完整监控服务 - 极简协调器模式"""
     
-    def __init__(self, log_file: Optional[str] = None, enable_source_map: bool = False):
+    def __init__(self, log_file: Optional[str] = None, enable_source_map: bool = False, persist_all_source_maps: bool = False):
         self.chrome_manager = None
         self.exit_event = asyncio.Event()
         self.log_file = log_file
         self.enable_source_map = enable_source_map
+        self.persist_all_source_maps = persist_all_source_maps
         
     async def start_monitoring(self, duration: Optional[int] = None) -> int:
         """一键启动完整监控服务"""
@@ -54,7 +55,8 @@ class BrowserFairyService:
             duration=duration,
             status_callback=status_callback,
             exit_event=self.exit_event,
-            enable_source_map=self.enable_source_map
+            enable_source_map=self.enable_source_map,
+            persist_all_source_maps=self.persist_all_source_maps
         )
     
     def _create_log_callback(self) -> Callable:

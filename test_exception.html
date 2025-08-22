@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Exception with Source Map</title>
+</head>
+<body>
+    <h1>Test Page for Source Map Persistence</h1>
+    <button onclick="throwError()">Throw Error</button>
+    <button onclick="throwMappedError()">Throw Error from Minified Code</button>
+    
+    <script>
+        // Simple error
+        function throwError() {
+            throw new Error("Test error from unminified code");
+        }
+        
+        // Simulate minified code with source map
+        function throwMappedError(){eval("throw new Error('Error from minified code');//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbInNyYy9hcHAuanMiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUEiLCJmaWxlIjoiYXBwLm1pbi5qcyIsInNvdXJjZXNDb250ZW50IjpbImZ1bmN0aW9uIHRocm93TWFwcGVkRXJyb3IoKSB7XG4gICAgdGhyb3cgbmV3IEVycm9yKCdFcnJvciBmcm9tIG9yaWdpbmFsIHNvdXJjZScpO1xufSJdfQ==")}
+    </script>
+    
+    <script>
+        // Also generate console errors
+        console.error("Test console error");
+        console.warn("Test console warning");
+        
+        // Trigger an exception after page load
+        setTimeout(() => {
+            console.log("About to throw a delayed error...");
+            nonExistentFunction(); // This will throw an exception
+        }, 2000);
+    </script>
+</body>
+</html>

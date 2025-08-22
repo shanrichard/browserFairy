@@ -9,14 +9,17 @@
 ### 1. 在项目目录启动监控
 
 ```bash
-# 启用Source Map解析（让AI看到源代码位置）并将监控文件写到当前项目所在的文件夹
-browserfairy --start-monitoring --enable-source-map --data-dir ./debug_data
+# 推荐：保存所有脚本源代码，让AI看到完整代码上下文
+browserfairy --start-monitoring --enable-source-map --persist-all-source-maps --data-dir ./debug_data
 
-# 或者收集完整性能数据（包含Source Map）
-browserfairy --start-monitoring --output performance --enable-source-map --data-dir ./debug_data
+# 或者收集完整性能数据
+browserfairy --start-monitoring --output performance --enable-source-map --persist-all-source-maps --data-dir ./debug_data
 ```
 
-> 💡 **重要提示**：`--enable-source-map` 参数让BrowserFairy自动解析压缩代码的Source Map，将错误定位到原始源代码位置。这对AI调试至关重要！
+> 💡 **重要提示**：
+> - `--enable-source-map` 启用脚本源代码收集功能
+> - `--persist-all-source-maps` 保存**所有JS脚本**（包括没有Source Map的网站）
+> - 这两个参数一起使用，AI能看到完整代码上下文，调试更精准！
 
 ### 2. 复现问题
 
