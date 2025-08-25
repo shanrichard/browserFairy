@@ -14,7 +14,7 @@ class TestNetworkStackEnhancement:
         """创建启用栈增强的NetworkMonitor"""
         mock_connector = AsyncMock()
         event_queue = asyncio.Queue()
-        monitor = NetworkMonitor(mock_connector, "test_session", event_queue)
+        monitor = NetworkMonitor(mock_connector, "test_session", "test_target", event_queue)
         return monitor
     
     def test_should_cache_initiator_large_upload(self, enhanced_network_monitor):

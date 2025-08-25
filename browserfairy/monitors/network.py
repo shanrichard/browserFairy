@@ -17,13 +17,22 @@ class NetworkMonitor:
     """Network request monitor - pure queue mode, unified filter→limit→construct→enqueue."""
     
     def __init__(self, connector: ChromeConnector, session_id: str,
+                 target_id: Optional[str],
                  event_queue: asyncio.Queue, status_callback: Optional[Callable] = None):
         self.connector = connector
         self.session_id = session_id
+        self.target_id = target_id
         self.event_queue = event_queue
         self.status_callback = status_callback
         self.pending_requests: dict = {}  # requestId -> request metadata
         self.hostname = None
+
+        # Listener registration guard to prevent duplicate handlers
+        self._listeners_registered = False
+        
+        # Request de-duplication cache (very short TTL)
+        self._request_cache = {}
+        self._cache_ttl = 0.001  # 1ms
         
         # Stack enhancement attributes (new)
         self.debugger_enabled = False
@@ -51,6 +60,9 @@ class NetworkMonitor:
         
     async def start_monitoring(self) -> None:
         """Start Network event listening."""
+        if self._listeners_registered:
+            logger.warning(f"NetworkMonitor listeners already registered for session {self.session_id}")
+            return
         self.connector.on_event("Network.requestWillBeSent", self._on_request_start)
         self.connector.on_event("Network.responseReceived", self._on_response_received)
         self.connector.on_event("Network.loadingFinished", self._on_request_finished)
@@ -65,9 +77,12 @@ class NetworkMonitor:
         
         # Enable Debugger for enhanced stack collection
         await self._enable_debugger_globally()
+        self._listeners_registered = True
     
     async def stop_monitoring(self) -> None:
         """Stop Network event listening with paired off_event."""
+        if not self._listeners_registered:
+            return
         self.connector.off_event("Network.requestWillBeSent", self._on_request_start)
         self.connector.off_event("Network.responseReceived", self._on_response_received)
         self.connector.off_event("Network.loadingFinished", self._on_request_finished)
@@ -87,6 +102,30 @@ class NetworkMonitor:
             return
             
         request_id = params["requestId"]
+
+        # Very short-window de-duplication
+        if self._is_duplicate_event(request_id, "requestWillBeSent"):
+            return
+
+        # Debug log
+        logger.debug(f"Network event: type=requestWillBeSent, requestId={request_id}, sessionId={self.session_id}")
+
+        # Handle redirects by augmenting existing request instead of creating a new one
+        if "redirectResponse" in params:
+            if request_id in self.pending_requests:
+                redirects = self.pending_requests[request_id].setdefault("redirects", [])
+                try:
+                    redirects.append({
+                        "url": params.get("request", {}).get("url", ""),
+                        "status": params.get("redirectResponse", {}).get("status"),
+                        "timestamp": params.get("timestamp"),
+                        "location": params.get("redirectResponse", {}).get("headers", {}).get("location")
+                    })
+                except Exception:
+                    # Keep redirects best-effort
+                    pass
+            # Do not emit a new start event for redirect hops
+            return
         
         # Construct metadata (no full body capture)
         request_data = {
@@ -99,7 +138,9 @@ class NetworkMonitor:
             "contentLength": len(params["request"].get("postData", "")),
             "initiator": self._format_initiator_simple(params["initiator"]),
             "startTime": params["timestamp"],  # CDP original monotonic time
-            "hostname": self.hostname
+            "hostname": self.hostname,
+            "sessionId": self.session_id,
+            "targetId": self.target_id
         }
         
         # Large request detection
@@ -163,6 +204,11 @@ class NetworkMonitor:
             return
             
         request_id = params["requestId"]
+
+        if self._is_duplicate_event(request_id, "responseReceived"):
+            return
+
+        logger.debug(f"Network event: type=responseReceived, requestId={request_id}, sessionId={self.session_id}")
         if request_id in self.pending_requests:
             response_data = {
                 "responseHeaders": self._truncate_headers(params["response"]["headers"]),
@@ -179,6 +225,11 @@ class NetworkMonitor:
             return
             
         request_id = params["requestId"]
+
+        if self._is_duplicate_event(request_id, "loadingFinished"):
+            return
+
+        logger.debug(f"Network event: type=loadingFinished, requestId={request_id}, sessionId={self.session_id}")
         if request_id not in self.pending_requests:
             return
             
@@ -209,7 +260,9 @@ class NetworkMonitor:
             "type": "network_request_complete",
             "endTime": params["timestamp"],
             "duration": params["timestamp"] - request_data["startTime"],
-            "encodedDataLength": response_size
+            "encodedDataLength": response_size,
+            "sessionId": self.session_id,
+            "targetId": self.target_id
         })
         
         # NEW: Final confirmation and attach detailedStack
@@ -266,6 +319,11 @@ class NetworkMonitor:
             return
             
         request_id = params["requestId"]
+
+        if self._is_duplicate_event(request_id, "loadingFailed"):
+            return
+
+        logger.debug(f"Network event: type=loadingFailed, requestId={request_id}, sessionId={self.session_id}")
         if request_id not in self.pending_requests:
             return
             
@@ -275,7 +333,9 @@ class NetworkMonitor:
             "type": "network_request_failed",
             "errorText": params.get("errorText", "Unknown error")[:200],
             "canceled": params.get("canceled", False),
-            "hostname": self.hostname
+            "hostname": self.hostname,
+            "sessionId": self.session_id,
+            "targetId": self.target_id
         })
         # Add event_id with error details for uniqueness
         try:
@@ -295,6 +355,20 @@ class NetworkMonitor:
             self.event_queue.put_nowait(("network_request_failed", request_data))
         except asyncio.QueueFull:
             logger.warning("Network event queue full, dropping request failure")
+
+    def _is_duplicate_event(self, request_id: str, event_type: str) -> bool:
+        """Very short TTL cache to drop duplicate CDP events for the same requestId/event."""
+        now = time.time()
+        cache_key = f"{request_id}:{event_type}"
+        last = self._request_cache.get(cache_key)
+        if last is not None and (now - last) < self._cache_ttl:
+            return True
+        self._request_cache[cache_key] = now
+        # Cleanup stale entries occasionally
+        if len(self._request_cache) > 10000:
+            threshold = now - (self._cache_ttl * 10)
+            self._request_cache = {k: v for k, v in self._request_cache.items() if v >= threshold}
+        return False
     
     def _truncate_headers(self, headers: dict, max_headers: int = 20, max_value_length: int = 256) -> dict:
         """Truncate HTTP headers: first 20 keys, each value ≤256 characters."""

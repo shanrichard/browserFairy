@@ -30,6 +30,7 @@ def network_monitor(mock_connector, event_queue):
     monitor = NetworkMonitor(
         connector=mock_connector,
         session_id="test_session_123",
+        target_id="test_target_abc",
         event_queue=event_queue,
         status_callback=None
     )

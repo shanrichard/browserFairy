@@ -720,6 +720,7 @@ class MemoryCollector:
         self.network_monitor = NetworkMonitor(
             self.connector,
             self.session_id,  # Use correct sessionId for filtering
+            self.target_id,   # Pass targetId for proper record
             self.event_queue,
             self.status_callback
         )
